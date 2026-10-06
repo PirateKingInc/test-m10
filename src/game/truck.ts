@@ -212,7 +212,8 @@ export class Truck {
     const g = heightFn(this.x, this.z);
     if (!this.airborne) {
       if (g >= this.y - 0.05) {
-        const newVy = (g - this.y) / Math.max(dt, 1e-4);
+        // slope-following vertical speed; clamped so a tiny sub-step can never turn a ramp into a catapult
+        const newVy = Math.max(-12, Math.min(12, (g - this.y) / Math.max(dt, 1 / 120)));
         this.vy = this.vy * 0.5 + newVy * 0.5;
         this.y = g;
       } else if (this.y - g > 0.35 && this.vy > 1.0) {

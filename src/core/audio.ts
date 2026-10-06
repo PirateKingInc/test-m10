@@ -171,6 +171,18 @@ export class AudioEngine {
     this.noiseHit(t, 400, 0.8, 0.18, 0.12, 'lowpass');
   }
 
+  /** combo multiplier tier-up (x2, x3): bright rising arpeggio, higher per tier */
+  comboTier(mult: number) {
+    if (!this.ok) return;
+    const t = this.ctx!.currentTime;
+    const base = mult >= 3 ? 784 : 587;
+    [0, 4, 7, 12].forEach((s, i) => {
+      const f = base * Math.pow(2, s / 12);
+      this.tone('square', f, f, t + i * 0.05, 0.004, 0.09, 0.12);
+      this.tone('sine', f * 2, f * 2, t + i * 0.05, 0.004, 0.05, 0.1);
+    });
+  }
+
   thud() {
     if (!this.ok) return;
     const t = this.ctx!.currentTime;

@@ -18,8 +18,10 @@ export const CONFIG = {
     length: 90, // seconds, standard level rounds
     endScreenDelay: 0.6, // "TIME!" slam before end screen (must be < 1s)
     warnAt: 5, // ticking beeps for the last N seconds
-    endWhenCleared: true, // end the round early ("CLEARED!") when nothing liftable is left
-    clearBonusPerSecond: 150, // score per second left at that moment
+    endWhenCleared: true, // nothing liftable left AND 3★ earned -> end early with "CLEARED!" + time bonus
+    clearBonusPerSecond: 400, // score per second left when CLEARED!
+    clearBonusCoinsPerSecond: 2, // coins per second left when CLEARED!
+    endWhenStuck: true, // nothing liftable left but < 3★ -> end early, no bonus (never strand the player)
   },
 
   truck: {
@@ -36,10 +38,10 @@ export const CONFIG = {
 
   magnet: {
     baseRadius: 3.0, // pull radius at start of round
-    radiusPerSqrtMass: 0.15, // + k * sqrt(collected mass)
-    maxRadius: 12,
+    radiusPerSqrtMass: 0.1, // + k * sqrt(collected mass)
+    maxRadius: 9,
     baseCapacity: 1.6, // max liftable mass at start (tiny = 1)
-    capacityPerMass: 0.12, // + k * collectedMass ^ capacityExponent
+    capacityPerMass: 0.07, // + k * collectedMass ^ capacityExponent
     capacityExponent: 1.0, // >1 = stronger snowball
     strainRatio: 3.0, // items up to capacity*ratio wobble when in range
     teeterTime: 0.12, // seconds items wobble before snapping (+ per tier)
@@ -66,9 +68,12 @@ export const CONFIG = {
   attachScaleByTier: [1, 1, 0.85, 0.62, 0.48],
 
   combo: {
-    window: 0.5, // seconds between pickups to keep the combo
-    multPerStep: 0.1, // score multiplier per combo step
-    maxMult: 3,
+    window: 0.4, // seconds between (player) pickups to keep the combo
+    // score + coin multiplier by chain length: x1 -> x2 -> x3
+    steps: [
+      { at: 15, mult: 2 },
+      { at: 40, mult: 3 },
+    ],
     pitchSemitonesPerStep: 1, // rising clunk pitch
     maxPitchSteps: 18,
     popupMin: 3, // show combo popup from this count
@@ -96,16 +101,18 @@ export const CONFIG = {
   },
 
   economy: {
-    coinsPerPoint: 0.0035, // ~25k pts typical round -> ~90 coins + star bonus
+    coinsPerValue: 0.06, // coins per junk value point (x combo multiplier)
+    assistedCoinFactor: 0.25, // pickups from a sky drop / pulse earn this share of coins...
+    assistedScoreFactor: 0.5, // ...and of score, and never extend the combo
     starCoins: [0, 10, 25, 50], // bonus by stars earned this round
     dailyReward: 200,
     startCoins: 0,
   },
 
   upgrades: {
-    magnet: { name: 'Magnet Radius', icon: '🧲', maxLevel: 5, costs: [60, 130, 220, 340, 500], perLevel: 0.18 }, // +18% base radius per level
-    speed: { name: 'Truck Speed', icon: '⚡', maxLevel: 5, costs: [50, 110, 190, 300, 450], perLevel: 0.08 }, // +8% speed per level
-    time: { name: 'More Time', icon: '⏱️', maxLevel: 5, costs: [70, 150, 250, 380, 550], perLevel: 5 }, // +5 s per level
+    magnet: { name: 'Magnet Power', icon: '🧲', maxLevel: 5, costs: [90, 150, 220, 300, 390], perLevel: 0.3, liftPerLevel: 0.35 }, // +30% pull radius & +35% lift capacity per level
+    speed: { name: 'Truck Speed', icon: '⚡', maxLevel: 5, costs: [100, 160, 230, 310, 400], perLevel: 0.12 }, // +12% speed per level
+    time: { name: 'More Time', icon: '⏱️', maxLevel: 5, costs: [110, 170, 240, 320, 410], perLevel: 8 }, // +8 s per level
   },
 
   rewarded: {
@@ -138,35 +145,47 @@ export const CONFIG = {
     roundLength: 90,
   },
 
-  /** Anti-dead-time assists (each can be toggled: ?debug=1&cfg.assist.pulse.enabled=false) */
+  /**
+   * Anti-dead-time assists. Adaptive: they wait longer for players who are picking things
+   * up steadily and step in sooner for struggling ones. Toggle: ?debug=1&cfg.assist.pulse.enabled=false
+   */
   assist: {
-    // a) junk from far away drops from the sky ahead of the player when the area runs dry
+    // "struggling" = few PLAYER pickups (not assisted ones) over the last `window` seconds
+    adaptive: {
+      window: 15,
+      rateHigh: 6.0, // pickups/s at or above this: assists use their base (slow) delay
+      rateLow: 2.0, // pickups/s at or below this: assists use their min (fast) delay
+    },
+    // a) far-away junk drops from the sky ahead of the player when the area runs dry
     skyDrop: {
       enabled: true,
-      minNearby: 6, // trigger when fewer liftable items than this are around the truck...
-      senseRadius: 14, // ...within this distance (+ pull radius)
-      idleDelay: 0.4, // ...and nothing has been picked up for this long
-      cooldown: 2,
-      count: 9, // items per drop
-      distMin: 6, // landing zone ahead of the truck
-      distMax: 15,
+      baseDelay: 1.6, // seconds without any pickup before a drop (healthy pickup rate)...
+      minDelay: 1.0, // ...shrinking to this for struggling players
+      minNearby: 4, // only when fewer liftable items than this are around the truck...
+      senseRadius: 5, // ...within pull radius * 2 + this (≈ pulse reach: if the pulse can't help, a drop does)
+      cooldown: 1.2,
+      count: 7, // items per drop
+      teaserShare: 0.45, // share of the drop that is one tier ABOVE what you can lift (a goal, not a gift)
+      distMin: 4, // landing zone ahead of the truck
+      distMax: 10,
       spread: 6,
-      height: 22, // fall height (fall ≈ 1s; the growing shadow is the telegraph)
-      teaserChance: 0.6, // also drop one "just too heavy" item
+      height: 10, // fall height (fall ≈ 0.7s; the growing shadow is the telegraph)
     },
     // b) magnet pulse: a shockwave that yanks distant liftable junk in
     pulse: {
       enabled: true,
-      idleDelay: 1.0, // auto-fires after this long without a pickup
-      cooldown: 3,
-      rangeMult: 2.6, // pulse range = pull radius * mult + add
-      rangeAdd: 6,
-      maxItems: 8,
+      baseDelay: 2.5, // seconds without any pickup before it fires (healthy pickup rate)...
+      minDelay: 1.5, // ...shrinking to this for struggling players
+      cooldown: 2.5,
+      rangeMult: 2.0, // range = pull radius * mult * (1 + perMagnetTier * magnet upgrade tier) + add
+      rangeAdd: 5, // (= skyDrop.senseRadius, so pulse reach and drop trigger meet)
+      perMagnetTier: 0.15, // magnet upgrades make the pulse reach further
+      maxItems: 6,
     },
     // c) off-screen arrow toward the best nearby cluster of liftable junk
     arrow: {
       enabled: true,
-      idleDelay: 0.8, // show after this long with nothing liftable on screen
+      idleDelay: 2.0, // show after this long with nothing liftable on screen
     },
   },
 

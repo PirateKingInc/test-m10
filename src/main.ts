@@ -1,5 +1,5 @@
 import './ui/styles.css';
-import { applyConfigOverrides } from './config';
+import { applyConfigOverrides, CONFIG } from './config';
 import { analytics, consoleSink } from './core/analytics';
 import { audio } from './core/audio';
 import { loadSave } from './core/save';
@@ -41,6 +41,7 @@ async function boot() {
   if (debug) {
     mountDebug(game, overrides);
     (window as any).__game = game;
+    (window as any).__cfg = CONFIG;
   }
 
   // show the game on its first frame; never make the player wait on the ad SDK

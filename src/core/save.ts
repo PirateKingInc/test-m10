@@ -13,6 +13,7 @@ export interface SaveData {
   stars: Record<string, number>; // levelId -> best stars
   bestScore: Record<string, number>; // modeKey -> best score
   bestPct: Record<string, number>; // levelId -> best % cleaned
+  bestCombo: Record<string, number>; // modeKey -> longest combo chain
   daily: { date: string; completed: boolean; best: number };
   muted: boolean;
   stats: { rounds: number; playSeconds: number; sessions: number };
@@ -29,6 +30,7 @@ function defaults(): SaveData {
     stars: {},
     bestScore: {},
     bestPct: {},
+    bestCombo: {},
     daily: { date: '', completed: false, best: 0 },
     muted: false,
     stats: { rounds: 0, playSeconds: 0, sessions: 0 },

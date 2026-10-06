@@ -43,6 +43,8 @@ export class UI {
   private busy = false;
   private last = { time: '', pct: -1, score: -1, mega: '-', goal: '-', urgent: false };
   private comboTimer = 0;
+  private multEl: HTMLElement;
+  private lastMult = '-';
   private arrow: HTMLElement;
   private arrowOn = false;
   /** banner-safe insets in px (read from CSS vars) */
@@ -58,6 +60,7 @@ export class UI {
           <div class="progress" id="progress"><div class="fill" id="fill"></div></div>
           <div class="rush" id="rush"></div>
           <div class="goal" id="goal"></div>
+          <div class="mult" id="mult"></div>
         </div>
         <div class="mega" id="mega"></div>
       </div>
@@ -73,6 +76,7 @@ export class UI {
     this.progress = $('#progress');
     this.rushEl = $('#rush');
     this.goalEl = $('#goal');
+    this.multEl = $('#mult');
     this.megaEl = $('#mega');
     this.hint = $('#hint');
     this.toasts = $('#toasts');
@@ -164,6 +168,14 @@ export class UI {
       this.arrow.classList.toggle('hidden', !a);
     }
     if (a) this.arrow.style.transform = `translate(${a.x}px, ${a.y}px) translate(-50%, -50%) rotate(${a.angle}rad)`;
+    // combo chain + multiplier, always visible while a chain is running
+    const mt = g.combo >= 2 ? `${g.combo} CHAIN${g.comboMult > 1 ? ` · x${g.comboMult}` : ''}` : '';
+    if (mt !== this.lastMult) {
+      this.lastMult = mt;
+      this.multEl.textContent = mt;
+      this.multEl.style.display = mt ? '' : 'none';
+      this.multEl.dataset.m = String(g.comboMult);
+    }
     const mega = g.megaLeft > 0 ? `🧲 MEGA ${Math.ceil(g.megaLeft)}` : '';
     if (mega !== this.last.mega) {
       this.last.mega = mega;
@@ -193,6 +205,14 @@ export class UI {
     this.comboEl.style.setProperty('--hue', String((n * 23) % 360));
     clearTimeout(this.comboTimer);
     this.comboTimer = window.setTimeout(() => this.comboEl.classList.remove('pop'), 700);
+  }
+
+  /** multiplier tier-up: big centre pop */
+  multiplier(m: number) {
+    this.toast(`x${m} MULTIPLIER!`);
+    this.multEl.classList.remove('up');
+    void this.multEl.offsetWidth;
+    this.multEl.classList.add('up');
   }
 
   timeBonus() {
@@ -234,8 +254,8 @@ export class UI {
     const playLabel = r.unlocked ? `▶ PLAY ${nextDef?.name.toUpperCase()}` : '▶ PLAY AGAIN';
     const main = isRush
       ? `<div class="big">${r.score.toLocaleString()}<small>score</small></div>`
-      : `<div class="big">${Math.round(r.pct * 100)}%<small>cleaned</small></div>`;
-    const bestLine = isRush || r.mode.kind === 'daily' ? `Best ${r.best.toLocaleString()}` : `Score ${r.score.toLocaleString()} · Best ${Math.round(r.best * 100)}%`;
+      : `<div class="big">${Math.round(r.pct * 100)}%<small>cleaned · best ${Math.round(r.best * 100)}%</small></div>`;
+    const bestLine = isRush || r.mode.kind === 'daily' ? `Best ${r.best.toLocaleString()}` : `Score ${r.score.toLocaleString()} · Best ${r.bestScore.toLocaleString()}`;
     const extraLabel = isRush ? `🎬 Continue run (+${CONFIG.rewarded.continueRunTime}s)` : `🎬 +${CONFIG.rewarded.extraTime} seconds`;
     this.panel.innerHTML = `
       <div class="card end">
@@ -243,7 +263,8 @@ export class UI {
         ${this.stars(r.stars, animate)}
         ${main}
         <div class="sub">${bestLine}${r.newBest ? ' <span class="newbest">NEW BEST!</span>' : ''}</div>
-        <div class="sub small">${r.lifted} pieces lifted · best combo x${r.maxCombo}</div>
+        <div class="sub combo-line">🔗 Combo ${r.maxCombo} · Best combo ${r.bestComboRecord}${r.newBestCombo ? ' <span class="newbest">NEW!</span>' : ''}</div>
+        ${r.outOfReach ? '<div class="sub small">Nothing left your magnet could lift — upgrade it in the Garage!</div>' : `<div class="sub small">${r.lifted} pieces lifted</div>`}
         ${r.dailyJustDone ? `<div class="banner">🎉 DAILY COMPLETE +${CONFIG.economy.dailyReward} 🪙</div>` : ''}
         ${r.unlocked ? `<div class="banner">🔓 NEW LEVEL: ${nextDef?.name}!</div>` : ''}
         <div class="coins">+${r.coinsEarned} 🪙 <span>${r.coinsTotal}</span></div>
@@ -324,7 +345,8 @@ export class UI {
   private upDesc(id: UpgradeId, lvl: number) {
     const u = CONFIG.upgrades[id];
     if (id === 'time') return `+${lvl * u.perLevel}s per round`;
-    return `+${Math.round(lvl * u.perLevel * 100)}% ${id === 'magnet' ? 'pull radius' : 'speed'}`;
+    if (id === 'magnet') return `+${Math.round(lvl * u.perLevel * 100)}% pull · +${Math.round(lvl * CONFIG.upgrades.magnet.liftPerLevel * 100)}% lift`;
+    return `+${Math.round(lvl * u.perLevel * 100)}% speed`;
   }
 
   /* ---------------- Modes ---------------- */

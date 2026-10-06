@@ -55,6 +55,9 @@ export interface Item {
   aScale: number; // scale once attached (compaction)
   airborne: boolean; // picked while truck airborne
   landed?: boolean; // DROP: already reported first touchdown
+  assisted?: boolean; // arrived via an assist (sky drop / magnet pulse)
+  fast?: boolean; // pulse yank: short teeter + quick flight
+  noBounce?: boolean; // assist drops settle on first touchdown (collectible sooner)
 }
 
 interface TypeInfo {
@@ -210,6 +213,7 @@ export class JunkSystem {
     it.cell = -1;
     it.attachAge = 0;
     it.airborne = false;
+    it.assisted = false;
     it.paint.setHex(paint);
     if (!old) {
       this.items.push(it);
@@ -221,6 +225,7 @@ export class JunkSystem {
     if (drop) {
       it.state = JS.DROP;
       it.landed = false;
+      it.noBounce = false;
       it.y = it.baseY + 18 + Math.random() * 10;
       it.vy = 0;
       this.active.push(it);
@@ -290,7 +295,7 @@ export class JunkSystem {
     if (it.state !== JS.STRAIN) this.active.push(it);
     it.state = JS.TEETER;
     it.t = 0;
-    it.dur = cfg.teeterTime + cfg.teeterPerTier * it.tier;
+    it.dur = it.fast ? 0.06 : cfg.teeterTime + cfg.teeterPerTier * it.tier;
     it.airborne = airborne;
     this.flying++;
     this.onLiftStart(it);
@@ -306,6 +311,8 @@ export class JunkSystem {
     it.y = it.baseY + height;
     it.vy = 0;
     it.landed = false;
+    it.assisted = true;
+    it.noBounce = true;
     it.state = JS.DROP;
     this.active.push(it);
     return true;
@@ -439,7 +446,7 @@ export class JunkSystem {
           it.y += it.vy * dt;
           if (it.y <= it.baseY) {
             it.y = it.baseY;
-            if (it.vy < -8) {
+            if (it.vy < -8 && !it.noBounce) {
               it.vy = -it.vy * 0.3; // one bounce
             } else {
               it.vy = 0;
@@ -492,7 +499,8 @@ export class JunkSystem {
     this.types[it.type].mesh.getMatrixAt(it.inst, _m);
     _m.decompose(_v, it.startQ, _s);
     const dist = Math.hypot(it.x - this.mx, it.z - this.mz);
-    it.dur = cfg.flyTime + cfg.flyPerTier * it.tier + dist * cfg.flyPerUnit;
+    it.dur = it.fast ? 0.3 + dist * 0.006 : cfg.flyTime + cfg.flyPerTier * it.tier + dist * cfg.flyPerUnit;
+    it.fast = false;
     // pile slot: golden-angle spiral, biased away from the truck underneath
     const k = this.slotIndex++;
     const theta = k * 2.399963;

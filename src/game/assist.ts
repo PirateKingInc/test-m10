@@ -67,6 +67,8 @@ export class Assist {
 
   reset() {
     this.stats = { drops: 0, dropItems: 0, pulses: 0, pulseItems: 0, arrowSec: 0 };
+    this.droughts = [];
+    this.lastAction = '';
     this.dropCd = this.pulseCd = this.scanT = this.noVisibleT = 0;
     this.arrowTarget = null;
     this.arrowScreen = null;
@@ -78,6 +80,13 @@ export class Assist {
   onScreen(x: number, y: number, z: number, margin = 0.92) {
     _v.set(x, y, z).project(this.g.rig.camera);
     return _v.z < 1 && Math.abs(_v.x) < margin && Math.abs(_v.y) < margin;
+  }
+
+  /** liftable items currently on screen (refreshed every 0.15s) */
+  visible: Item[] = [];
+  /** best liftable cluster on the truck's level (bot memory / arrow) */
+  findCluster() {
+    return this.bestCluster(this.g.capacity);
   }
 
   /** nearest liftable item that is visible on screen (also used by the bot) */
@@ -92,10 +101,12 @@ export class Assist {
     let best: Item | null = null;
     let bd = Infinity;
     let count = 0;
+    this.visible.length = 0;
     g.junk.forEachNear(g.truck.x, g.truck.z, 60, (it) => {
       if (it.mass > cap || Math.abs(it.baseY - g.truck.y) > 0.6) return;
       if (!this.onScreen(it.x, it.y, it.z)) return;
       count++;
+      this.visible.push(it);
       const d = (it.x - g.truck.x) ** 2 + (it.z - g.truck.z) ** 2;
       if (d < bd) {
         bd = d;
@@ -122,17 +133,34 @@ export class Assist {
     const radius = g.radius();
 
     // a) sky drop
-    if (A.skyDrop.enabled && this.dropCd <= 0 && idle >= A.skyDrop.idleDelay) {
-      const sense = A.skyDrop.senseRadius + radius;
+    const struggle = this.struggle();
+    this.dropDelay = A.skyDrop.baseDelay - (A.skyDrop.baseDelay - A.skyDrop.minDelay) * struggle;
+    this.pulseDelay = A.pulse.baseDelay - (A.pulse.baseDelay - A.pulse.minDelay) * struggle;
+    if (A.skyDrop.enabled && this.dropCd <= 0 && idle >= this.dropDelay) {
+      const sense = A.skyDrop.senseRadius + radius * 2;
       let near = 0;
       g.junk.forEachNear(g.truck.x, g.truck.z, sense, (it) => {
-        if (it.mass <= cap && Math.hypot(it.x - g.truck.x, it.z - g.truck.z) < sense && Math.abs(it.y - g.truck.y) < 3) near++;
+        if (it.mass <= cap && Math.hypot(it.x - g.truck.x, it.z - g.truck.z) < sense && Math.abs(it.baseY - g.truck.y) < 0.6) near++;
       });
       if (near < A.skyDrop.minNearby) this.skyDrop(sense, cap);
     }
 
+    // debug: record why a drought got long (read by the measurement harness)
+    if (idle > 3.5 && !this.droughtLogged) {
+      this.droughtLogged = true;
+      let near = 0;
+      const sense = A.skyDrop.senseRadius + radius * 2;
+      g.junk.forEachNear(g.truck.x, g.truck.z, sense, (it) => {
+        if (it.mass <= cap && Math.hypot(it.x - g.truck.x, it.z - g.truck.z) < sense && Math.abs(it.baseY - g.truck.y) < 0.6) near++;
+      });
+      let dropping = 0;
+      g.junk.forEachDropping(() => dropping++);
+      this.droughts.push({ t: Math.round(g.roundTime), near, dropCd: +this.dropCd.toFixed(1), pulseCd: +this.pulseCd.toFixed(1), dDelay: +this.dropDelay.toFixed(1), pDelay: +this.pulseDelay.toFixed(1), flying: g.junk.flying, dropping, last: this.lastAction, cap: Math.round(cap), y: +g.truck.y.toFixed(1) });
+    }
+    if (idle < 0.1) this.droughtLogged = false;
+
     // b) pulse
-    if (A.pulse.enabled && this.pulseCd <= 0 && idle >= A.pulse.idleDelay) this.pulse(radius, cap);
+    if (A.pulse.enabled && this.pulseCd <= 0 && idle >= this.pulseDelay) this.pulse(radius, cap);
 
     // c) arrow
     let incoming = false;
@@ -145,6 +173,25 @@ export class Assist {
     } else this.arrowTarget = null;
   }
 
+  droughts: Record<string, unknown>[] = [];
+  private droughtLogged = false;
+  private lastAction = '';
+  /** current assist delays (exposed for the debug overlay) */
+  dropDelay = 0;
+  pulseDelay = 0;
+
+  /**
+   * 0 = healthy pickup rate (assists wait their base delay), 1 = struggling (min delay).
+   * Based on PLAYER pickups only (assisted ones don't count) over the last N seconds.
+   */
+  struggle(): number {
+    const a = CONFIG.assist.adaptive;
+    const g = this.g;
+    const span = Math.max(4, Math.min(a.window, g.roundTime));
+    const rate = g.playerPickupsSince(g.roundTime - span) / span;
+    return Math.max(0, Math.min(1, (a.rateHigh - rate) / (a.rateHigh - a.rateLow)));
+  }
+
   private skyDrop(sense: number, cap: number) {
     const g = this.g;
     const A = CONFIG.assist.skyDrop;
@@ -152,41 +199,61 @@ export class Assist {
     const teasers: Item[] = [];
     const tx = g.truck.x;
     const tz = g.truck.z;
+    // "one tier above what you can lift" = the goal tier
+    let liftTier = 0;
+    CONFIG.tiers.forEach((t, i) => {
+      if (t.mass <= cap) liftTier = i;
+    });
     g.junk.forEachResting((it) => {
       const d = Math.hypot(it.x - tx, it.z - tz);
       if (d < sense + 10) return;
       if (it.mass <= cap) far.push(it);
-      else if (it.mass <= cap * CONFIG.magnet.strainRatio && it.tier < 4) teasers.push(it);
+      else if (it.tier === liftTier + 1) teasers.push(it);
     });
-    if (!far.length) {
+    if (!far.length && !teasers.length) {
       this.dropCd = 1;
       return;
     }
-    // take from the farthest corners first so the area around the player keeps its junk
-    far.sort((a, b) => Math.hypot(b.x - tx, b.z - tz) - Math.hypot(a.x - tx, a.z - tz));
-    const pick = far.slice(0, Math.min(far.length, A.count * 3));
-    const chosen: Item[] = [];
-    for (let i = 0; i < A.count && pick.length; i++) chosen.push(pick.splice(Math.floor(g.rng.next() * pick.length), 1)[0]);
-    if (teasers.length && g.rng.next() < A.teaserChance) chosen.push(teasers[Math.floor(g.rng.next() * teasers.length)]);
+    const pickFrom = (list: Item[], n: number) => {
+      // farthest corners first, so the area around the player keeps its own junk
+      list.sort((a, b) => Math.hypot(b.x - tx, b.z - tz) - Math.hypot(a.x - tx, a.z - tz));
+      const pool = list.slice(0, Math.min(list.length, n * 3));
+      const out: Item[] = [];
+      for (let i = 0; i < n && pool.length; i++) out.push(pool.splice(Math.floor(g.rng.next() * pool.length), 1)[0]);
+      return out;
+    };
+    const nTease = Math.min(teasers.length, Math.round(A.count * A.teaserShare));
+    const chosen = [...pickFrom(teasers, nTease), ...pickFrom(far, A.count - nTease)];
 
     const fx = g.truck.forwardX;
     const fz = g.truck.forwardZ;
     const k = g.truck.scale;
     let dropped = 0;
     for (const it of chosen) {
-      for (let tries = 0; tries < 8; tries++) {
+      for (let tries = 0; tries < 16; tries++) {
         const d = g.rng.range(A.distMin, A.distMax) * k;
-        const side = g.rng.range(-A.spread, A.spread) * k;
-        const x = tx + fx * d - fz * side;
-        const z = tz + fz * d + fx * side;
+        let x: number;
+        let z: number;
+        if (tries < 8) {
+          // ahead of the truck
+          const side = g.rng.range(-A.spread, A.spread) * k;
+          x = tx + fx * d - fz * side;
+          z = tz + fz * d + fx * side;
+        } else {
+          // facing a wall / map edge: anywhere around the truck
+          const a = g.rng.range(0, Math.PI * 2);
+          x = tx + Math.sin(a) * d;
+          z = tz + Math.cos(a) * d;
+        }
         if (Math.abs(g.world.heightAt(x, z) - g.truck.y) > 0.5) continue; // same level as the truck
         if (Math.abs(x) > g.half - 3 || Math.abs(z) > g.half - 3) continue;
-        if (g.junk.dropAt(it, x, z, A.height + g.rng.range(0, 6))) {
+        if (g.junk.dropAt(it, x, z, A.height + g.rng.range(0, 3))) {
           dropped++;
           break;
         }
       }
     }
+    this.lastAction = `drop ${dropped}/${chosen.length} far=${far.length} tease=${teasers.length} @${Math.round(g.roundTime)}`;
     if (dropped) {
       this.stats.drops++;
       this.stats.dropItems += dropped;
@@ -198,7 +265,7 @@ export class Assist {
   private pulse(radius: number, cap: number) {
     const g = this.g;
     const P = CONFIG.assist.pulse;
-    const range = radius * P.rangeMult + P.rangeAdd;
+    const range = radius * P.rangeMult * (1 + P.perMagnetTier * g.save.upgrades.magnet) + P.rangeAdd;
     const list: { it: Item; d: number }[] = [];
     g.junk.forEachNear(g.truck.x, g.truck.z, range, (it) => {
       if (it.mass > cap || Math.abs(it.y - g.truck.y) > 3) return;
@@ -206,10 +273,15 @@ export class Assist {
       if (d <= range) list.push({ it, d });
     });
     this.pulseCd = list.length ? P.cooldown : 0.6;
+    this.lastAction = `pulse ${list.length} @${Math.round(g.roundTime)}`;
     if (!list.length) return;
     list.sort((a, b) => a.d - b.d);
     const n = Math.min(P.maxItems, list.length);
-    for (let i = 0; i < n; i++) g.junk.lift(list[i].it, g.truck.airborne);
+    for (let i = 0; i < n; i++) {
+      list[i].it.assisted = true;
+      list[i].it.fast = true;
+      g.junk.lift(list[i].it, g.truck.airborne);
+    }
     this.stats.pulses++;
     this.stats.pulseItems += n;
     this.ringT = 0;

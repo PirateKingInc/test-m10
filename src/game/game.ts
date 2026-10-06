@@ -17,6 +17,7 @@ import { JUNK_TYPES } from './junkTypes';
 import { DailyGoal, generateLayout, Layout, LEVELS, levelById, LevelDef, ModeKind, dailySetup } from './levels';
 import { Truck } from './truck';
 import { Assist } from './assist';
+import { Bot, BotSkill } from './bot';
 import { World } from './world';
 import type { UI } from '../ui/ui';
 
@@ -49,6 +50,10 @@ export interface Results {
   canTriple: boolean;
   nextMode: ModeSpec;
   maxCombo: number;
+  bestComboRecord: number;
+  newBestCombo: boolean;
+  bestScore: number;
+  outOfReach: boolean;
   lifted: number;
 }
 
@@ -77,6 +82,14 @@ export function deadTime(times: number[], end: number, window = 30): DeadTimeSta
     gapsOver3: over.length,
     secOver3: r(over.reduce((a, g) => a + g - 3, 0)),
   };
+}
+
+/** number of pickup droughts longer than `limit` seconds over the whole round */
+export function deadTimeOver(times: number[], end: number, limit: number) {
+  const pts = [0, ...times.filter((t) => t <= end), end];
+  let n = 0;
+  for (let i = 1; i < pts.length; i++) if (pts[i] - pts[i - 1] > limit) n++;
+  return n;
 }
 
 type State = 'boot' | 'attract' | 'playing' | 'timeup' | 'end' | 'loading';
@@ -113,7 +126,13 @@ export class Game implements FeatureHost {
   score = 0;
   combo = 0;
   maxCombo = 0;
-  private lastPickupT = 0;
+  private lastPickupT = 0; // any pickup (assist idle timers)
+  private lastComboT = -10; // player pickups only (combo chain)
+  private playerPickupTimes: number[] = [];
+  /** junk value collected, weighted by combo multiplier and assist factor -> coins */
+  private coinValue = 0;
+  /** current combo multiplier (x1 / x2 / x3) */
+  comboMult = 1;
   private chainTime = 0;
   megaLeft = 0;
   private hitStop = 0;
@@ -133,8 +152,15 @@ export class Game implements FeatureHost {
   lastResults: Results | null = null;
   private wasAirborne = false;
 
-  /** ?bot=1 — autopilot for tuning / automated tests */
+  /** ?bot=1&skill=novice|average|skilled — autopilot for tuning / automated tests */
   bot = new URLSearchParams(location.search).get('bot') === '1';
+  private brain = new Bot((new URLSearchParams(location.search).get('skill') as BotSkill) || 'average');
+  /** per-round numbers for the measurement harness and analytics */
+  lastRoundStats: Record<string, unknown> | null = null;
+  pickups = 0;
+  assistedPickups = 0;
+  earlyEnd: '' | 'cleared' | 'stuck' = '';
+  secondsLost = 0;
   /** ?debug=1&speed=N — simulate N× faster than real time (bot measurements) */
   simSpeed = (() => {
     const p = new URLSearchParams(location.search);
@@ -181,7 +207,8 @@ export class Game implements FeatureHost {
   }
   private baseCapacity() {
     const m = CONFIG.magnet;
-    return m.baseCapacity + m.capacityPerMass * Math.pow(this.junk.collectedMass, m.capacityExponent);
+    const lift = 1 + this.save.upgrades.magnet * CONFIG.upgrades.magnet.liftPerLevel;
+    return (m.baseCapacity + m.capacityPerMass * Math.pow(this.junk.collectedMass, m.capacityExponent)) * lift;
   }
   blocked(x: number, z: number) {
     const lim = this.world.half - 3;
@@ -324,8 +351,18 @@ export class Game implements FeatureHost {
     this.combo = 0;
     this.maxCombo = 0;
     this.lastPickupT = 0;
+    this.lastComboT = -10;
+    this.playerPickupTimes = [];
+    this.coinValue = 0;
+    this.comboMult = 1;
     this.pickupTimes = [];
+    this.pickups = 0;
+    this.assistedPickups = 0;
+    this.earlyEnd = '';
+    this.secondsLost = 0;
+    this.brain = new Bot(this.brain.skill);
     this.clearedEarly = false;
+    this.clearCoins = 0;
     this.assist.reset();
     this.megaLeft = opts.mega ? CONFIG.rewarded.megaMagnetDuration : 0;
     this.hitStop = 0;
@@ -365,9 +402,12 @@ export class Game implements FeatureHost {
     }
     this.input.update();
     // fixed-size sub-steps keep physics stable and real-time on slow devices
-    let left = dt * this.simSpeed;
+    // equal sub-steps (never a tiny remainder step: those caused ramp-launch spikes)
+    const total = dt * this.simSpeed;
+    const n = Math.max(1, Math.ceil(total / (1 / 30) - 1e-6));
+    let left = total;
     do {
-      const step = Math.min(left, 1 / 30);
+      const step = total / n;
       left -= step;
       let simDt = step;
       if (this.hitStop > 0) {
@@ -401,7 +441,7 @@ export class Game implements FeatureHost {
         this.hintTimer += dt;
         if (this.firstPickup && this.hintTimer > 2.5) this.ui.showHint(true);
       } else if (s === 'playing') {
-        const auto = this.bot && !this.input.active ? this.botSteer(dt) : null;
+        const auto = this.bot && !this.input.active ? this.brain.steer(this, dt) : null;
         if (auto) {
           [wantX, wantZ] = auto;
           hasInput = true;
@@ -434,7 +474,10 @@ export class Game implements FeatureHost {
         this.clearCheckT -= dt;
         if (CONFIG.round.endWhenCleared && this.clearCheckT <= 0 && this.timerRunning && this.mode.kind !== 'rush') {
           this.clearCheckT = 0.5;
-          if (!this.junk.anyLiftable(this.capacity)) this.levelCleared();
+          if (!this.junk.anyLiftable(this.capacity)) {
+            if (this.pct() >= this.level.stars[2]) this.levelCleared();
+            else if (CONFIG.round.endWhenStuck) this.outOfReach();
+          }
         }
         if (this.timerRunning) {
           const drain = this.mode.kind === 'rush' ? 1 + (this.roundTime / 60) * CONFIG.rush.drainPerMinute : 1;
@@ -454,7 +497,10 @@ export class Game implements FeatureHost {
           if (this.megaLeft <= 0) this.toast('Mega Magnet ended');
         }
       }
-      if (this.roundTime - this.lastPickupT > CONFIG.combo.window && this.combo > 0) this.combo = 0;
+      if (this.roundTime - this.lastComboT > CONFIG.combo.window && this.combo > 0) {
+        this.combo = 0;
+        this.comboMult = 1;
+      }
 
       const growth = (Math.min(CONFIG.magnet.maxRadius, this.baseRadius() + CONFIG.magnet.radiusPerSqrtMass * Math.sqrt(this.junk.collectedMass)) / CONFIG.magnet.baseRadius - 1) * 0.35;
       this.truck.updateVisual(dt, this.junk.pileRadius, radius, growth, this.megaLeft > 0, this.roundTime, this.world.heightAt);
@@ -464,46 +510,18 @@ export class Game implements FeatureHost {
     this.ui?.updateHud(this);
   }
 
-  private botT = 0;
-  private botPos = [0, 0];
-  private botEscape = 0;
-  private botEscDir: [number, number] = [1, 0];
-  /** Tuning bot: chase nearest liftable junk, back off at random when stuck on walls. */
-  private botSteer(dt: number): [number, number] | null {
-    this.botT += dt;
-    if (this.botEscape > 0) {
-      this.botEscape -= dt;
-      return this.botEscDir;
-    }
-    if (this.botT > 1) {
-      const moved = Math.hypot(this.truck.x - this.botPos[0], this.truck.z - this.botPos[1]);
-      this.botPos = [this.truck.x, this.truck.z];
-      this.botT = 0;
-      if (moved < 4) {
-        const a = Math.random() * Math.PI * 2;
-        this.botEscDir = [Math.cos(a), Math.sin(a)];
-        this.botEscape = 1.5;
-        return this.botEscDir;
-      }
-    }
-    // what a player would do: chase visible junk, else follow the arrow, else wander
-    const n = this.assist.nearestVisible;
-    if (n && n.state <= 1) return [n.x - this.truck.x, n.z - this.truck.z];
-    const a = this.assist.arrowTarget;
-    if (a) return [a.x - this.truck.x, a.z - this.truck.z];
-    this.botWanderT -= dt;
-    const edge = this.world.half - 12;
-    if (Math.abs(this.truck.x) > edge || Math.abs(this.truck.z) > edge) {
-      this.botWander = Math.atan2(-this.truck.x, -this.truck.z) + (Math.random() - 0.5);
-      this.botWanderT = 2;
-    } else if (this.botWanderT <= 0) {
-      this.botWander = this.truck.heading + (Math.random() - 0.5) * 2.2;
-      this.botWanderT = 2.5;
-    }
-    return [Math.sin(this.botWander), Math.cos(this.botWander)];
+
+  /** seconds left before the running combo breaks (0 if none) */
+  comboTimeLeft() {
+    return this.combo > 0 ? Math.max(0, CONFIG.combo.window - (this.roundTime - this.lastComboT)) : 0;
   }
-  private botWander = 0;
-  private botWanderT = 0;
+
+  /** player (non-assisted) pickups since round time t */
+  playerPickupsSince(t: number) {
+    let n = 0;
+    for (let i = this.playerPickupTimes.length - 1; i >= 0 && this.playerPickupTimes[i] >= t; i--) n++;
+    return n;
+  }
 
   sinceLastPickup() {
     return this.roundTime - this.lastPickupT;
@@ -547,18 +565,37 @@ export class Game implements FeatureHost {
       this.ui.showHint(false);
       analytics.track('first_pickup', { t: analytics.now(), afterInput: this.firstInput });
     }
-    if (this.roundTime - this.lastPickupT <= C.window) this.combo++;
-    else this.combo = 1;
+    const E = CONFIG.economy;
+    const assisted = !!it.assisted;
+    // assisted pickups (sky drop / pulse) never extend the combo; they don't break it either
+    if (!assisted) {
+      if (this.roundTime - this.lastComboT <= C.window) this.combo++;
+      else this.combo = 1;
+      this.lastComboT = this.roundTime;
+      this.playerPickupTimes.push(this.roundTime);
+    }
     this.lastPickupT = this.roundTime;
-    if (this.state === 'playing') this.pickupTimes.push(this.roundTime);
+    if (this.state === 'playing') {
+      this.pickupTimes.push(this.roundTime);
+      this.pickups++;
+      if (assisted) this.assistedPickups++;
+    }
     this.maxCombo = Math.max(this.maxCombo, this.combo);
-    const mult = Math.min(C.maxMult, 1 + (this.combo - 1) * C.multPerStep);
+    let mult = 1;
+    for (const st of C.steps) if (this.combo >= st.at) mult = st.mult;
+    if (mult > this.comboMult && !assisted) {
+      this.ui.multiplier(mult);
+      audio.comboTier(mult);
+    }
+    this.comboMult = mult;
+    const m = assisted ? 1 : mult;
     const air = it.airborne ? 2 : 1;
-    this.score += Math.round(it.value * 10 * mult * air);
+    this.score += Math.round(it.value * 10 * m * air * (assisted ? E.assistedScoreFactor : 1));
+    this.coinValue += it.value * m * (assisted ? E.assistedCoinFactor : 1);
     this.tierLifted[it.tier]++;
 
-    audio.clunk(it.tier, Math.min(this.combo - 1, C.maxPitchSteps) * C.pitchSemitonesPerStep);
-    if (this.combo >= 2) audio.chime(this.combo);
+    audio.clunk(it.tier, assisted ? 0 : Math.min(this.combo - 1, C.maxPitchSteps) * C.pitchSemitonesPerStep);
+    if (this.combo >= 2 && !assisted) audio.chime(this.combo);
     this.truck.bump(J.squashByTier[it.tier]);
     this.rig.shake(J.shakeByTier[it.tier]);
     const paint = JUNK_TYPES[it.type].paints[0];
@@ -600,14 +637,27 @@ export class Game implements FeatureHost {
   /** Nothing liftable left: end early and pay out the remaining time. */
   private levelCleared() {
     const secs = Math.ceil(this.timeLeft);
+    this.earlyEnd = 'cleared';
+    this.secondsLost = this.timeLeft;
     this.clearedEarly = true;
     this.score += secs * CONFIG.round.clearBonusPerSecond;
+    this.clearCoins = secs * CONFIG.round.clearBonusCoinsPerSecond;
     this.toast(`LEVEL CLEARED! +${(secs * CONFIG.round.clearBonusPerSecond).toLocaleString()}`);
     audio.powerUp();
     this.timeLeft = 0;
     this.timeUp();
   }
   clearedEarly = false;
+  private clearCoins = 0;
+
+  /** Nothing left this magnet can lift, but no 3★ yet: end now (no bonus) instead of stranding the player. */
+  private outOfReach() {
+    this.earlyEnd = 'stuck';
+    this.secondsLost = this.timeLeft;
+    this.toast('NOTHING LEFT YOU CAN LIFT!');
+    this.timeLeft = 0;
+    this.timeUp();
+  }
 
   private timeUp() {
     this.lastDeadTime = deadTime(this.pickupTimes, this.roundTime);
@@ -672,7 +722,9 @@ export class Game implements FeatureHost {
     }
 
     // coins (delta vs anything already granted this round, so +time continues are fair)
-    const earned = Math.floor(this.score * CONFIG.economy.coinsPerPoint) + CONFIG.economy.starCoins[stars] + bonus;
+    const earned = Math.floor(this.coinValue * CONFIG.economy.coinsPerValue) + CONFIG.economy.starCoins[stars] + bonus + this.clearCoins;
+    const prevCombo = save.bestCombo[key] ?? 0;
+    save.bestCombo[key] = Math.max(prevCombo, this.maxCombo);
     const total = Math.max(earned, this.coinsGranted);
     save.coins += total - this.coinsGranted;
     this.coinsGranted = total;
@@ -692,6 +744,24 @@ export class Game implements FeatureHost {
 
     const goals = this.nextGoals(mode, stars, pct);
     const nextMode: ModeSpec = unlocked ? { kind: 'level', levelId: unlocked } : mode;
+    const whole = deadTime(this.pickupTimes, this.roundTime, this.roundTime);
+    this.lastRoundStats = {
+      mode: mode.kind,
+      level: this.level.id,
+      score: this.score,
+      pct: Math.round(pct * 1000) / 10,
+      stars,
+      coins: total,
+      maxGap: whole.maxGap,
+      maxGap30: this.lastDeadTime?.maxGap ?? 0,
+      gapsOver35: deadTimeOver(this.pickupTimes, this.roundTime, 3.5),
+      assistedShare: this.pickups ? Math.round((this.assistedPickups / this.pickups) * 1000) / 10 : 0,
+      bestCombo: this.maxCombo,
+      roundTime: Math.round(this.roundTime * 10) / 10,
+      earlyEnd: this.earlyEnd,
+      secondsLost: Math.round(this.secondsLost * 10) / 10,
+      droughts: this.assist.droughts.slice(0, 5),
+    };
     analytics.track('round_end', {
       mode: mode.kind,
       level: this.level.id,
@@ -709,7 +779,11 @@ export class Game implements FeatureHost {
     });
     return {
       mode,
-      title: mode.kind === 'rush' ? 'RUN OVER!' : this.clearedEarly ? 'CLEARED!' : "TIME'S UP!",
+      title: mode.kind === 'rush' ? 'RUN OVER!' : this.clearedEarly ? 'CLEARED!' : this.earlyEnd === 'stuck' ? 'OUT OF REACH!' : "TIME'S UP!",
+      bestComboRecord: save.bestCombo[key],
+      newBestCombo: this.maxCombo > prevCombo && prevCombo > 0,
+      bestScore: save.bestScore[key] ?? this.score,
+      outOfReach: this.earlyEnd === 'stuck',
       score: this.score,
       pct,
       stars,
@@ -722,7 +796,7 @@ export class Game implements FeatureHost {
       dailyDone,
       dailyJustDone,
       unlocked,
-      canExtraTime: mode.kind === 'rush' ? !this.continueUsed : !this.extraTimeUsed && !this.clearedEarly,
+      canExtraTime: mode.kind === 'rush' ? !this.continueUsed : !this.extraTimeUsed && !this.earlyEnd,
       canTriple: !this.tripleUsed && total > 0,
       nextMode,
       maxCombo: this.maxCombo,
@@ -878,6 +952,9 @@ export class Game implements FeatureHost {
       flying: this.junk.flying,
       combo: this.combo,
       mega: this.megaLeft > 0 ? this.megaLeft.toFixed(1) : '-',
+      mult: 'x' + this.comboMult,
+      assistDly: `drop ${this.assist.dropDelay.toFixed(1)} pulse ${this.assist.pulseDelay.toFixed(1)}`,
+      assisted: `${this.assistedPickups}/${this.pickups}`,
       coins: this.save.coins,
       calls: this.world.renderer.info.render.calls,
       tris: this.world.renderer.info.render.triangles,
