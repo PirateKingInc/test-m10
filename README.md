@@ -21,7 +21,7 @@ npm run thumbnails # render promo thumbnails -> thumbnails/*.png (see below)
 ```
 
 ## Submitting to Poki
-`npm run package` produces `junk-magnet-poki.zip` (≈164 KB) with `index.html`
+`npm run package` produces `junk-magnet-poki.zip` (≈169 KB) with `index.html`
 at the zip root. Every path is relative (`base: './'`), so it runs from any
 sub-path or iframe.
 
@@ -73,11 +73,11 @@ sub-path or iframe.
 ## Final bundle size
 | File | Raw | Gzip |
 |---|---|---|
-| `assets/index-*.js` (game + three.js) | 587 KB | 158 KB |
-| `assets/thumbnail-*.js` (lazy, only loaded with `?thumb=1`) | 4.4 KB | 2.1 KB |
-| `assets/index-*.css` | 10.4 KB | 3.1 KB |
+| `assets/index-*.js` (game + three.js) | 600 KB | 161 KB |
+| `assets/thumbnail-*.js` (lazy, only loaded with `?thumb=1`) | 4.8 KB | 2.3 KB |
+| `assets/index-*.css` | 11.7 KB | 3.4 KB |
 | `index.html` | 1.6 KB | 0.8 KB |
-| **Total `dist/`** | **≈ 604 KB** | **≈ 164 KB** (zip: 164 KB) |
+| **Total `dist/`** | **≈ 618 KB** | **≈ 168 KB** (zip: 169 KB) |
 
 That is well under the 5 MB target, with no images, models or audio files.
 Under 4× CPU throttling, a 4G-like network profile and software WebGL (headless
@@ -493,8 +493,8 @@ than ~3.5s.
 | 6. Short rounds, instant retry, end screen < 1s | ✅ | "TIME!" slam, then the end screen at 0.6s with stars, % cleaned, score, best (with NEW BEST), coins, and "next goal" lines (next star threshold and the coins still needed for the cheapest upgrade). One tap on PLAY AGAIN starts the next round. |
 | 7. Light meta, ~1 upgrade per round | ✅ | Tiers cost 90–420 coins. An average player earns ~165–200 coins per round (less in Suburb), skilled players more through combo multipliers, and assisted pickups pay ¼. Magnet Power (+30% pull, +35% lift per tier) is what opens 3★, so every purchase is felt. Measured: average reaches Junkyard 3★ with ~3–4 tiers and Suburb with ~4 (*Difficulty retune*). The "Free" rewarded offer per tier speeds this up for players who watch ads. |
 | Portrait-first, responsive | ✅ | Camera framing adapts to aspect ratio (it keeps visible width in portrait) and updates live on resize/orientation change. Touch targets are ≥48px, and the 90px banner-safe zones are enforced in portrait. |
-| 60fps on mid-range phones | ⚠️ Not measured on a device | About 24 draw calls and ~67k triangles regardless of junk count (instancing per type, static decor merged into 1 mesh), pooled particles and junk, max 36 flying bodies, junk outside the magnet's grid cells never touched (sleeping), DPR capped at 1.5 on mobile, no real-time shadows. The sandbox had no GPU, so FPS numbers there are meaningless. **Check on a real phone with `?debug=1`.** |
-| Build < 5MB, playable < 3s | ✅ | ~580KB total. ~1.5s to playable under throttled conditions. |
+| 60fps on mid-range phones | ⚠️ Not measured on a device | About 28 draw calls and ~115k triangles at round start regardless of junk count (instancing per type, static decor merged into 1 mesh; the liftable outline adds one instanced draw per liftable junk type, so up to ~37 calls once everything is liftable), pooled particles and junk, max 36 flying bodies, junk outside the magnet's grid cells never touched (sleeping), DPR capped at 1.5 on mobile, no real-time shadows. The sandbox had no GPU, so FPS numbers there are meaningless. **Check on a real phone with `?debug=1`.** |
+| Build < 5MB, playable < 3s | ✅ | ~618KB total (169 KB zip). ~1.5s to playable under throttled conditions. |
 
 ## Next 5 changes most likely to raise average playtime and rewarded opt-in (ranked)
 *(Shipped since the last list: late-round dead time, star/economy calibration against bots, and the playtest-1 readability fix. See above.)*
