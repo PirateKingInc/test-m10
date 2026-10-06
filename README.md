@@ -16,9 +16,45 @@ npm install
 npm run dev        # http://localhost:5173
 npm run build      # typecheck + production build -> dist/
 npm run preview    # serve dist/ on http://localhost:4173
+npm run package    # build + junk-magnet-poki.zip (the file you upload to Poki)
 ```
 
-To upload to Poki, zip the contents of `dist/` (`base: './'` keeps every path relative).
+## Submitting to Poki
+`npm run package` produces `junk-magnet-poki.zip` (≈155 KB) with `index.html`
+at the zip root. Every path is relative (`base: './'`), so it runs from any
+sub-path or iframe.
+
+**Done in code (verified in tests):**
+- The SDK loads automatically on any `*poki*` host. It is skipped if Poki has
+  already injected `window.PokiSDK`.
+- The SDK runs `init` → `gameLoadingFinished`, and `gameplayStart` fires on the
+  first input. It never fires twice in a row, and no ad is ever requested while
+  gameplay is running.
+- Rewarded ads use the current `rewardedBreak({ size, onStart })` form (sizes are
+  listed in the ad table below). A reward is granted only when the SDK resolves
+  `true`.
+- **On a Poki host where the SDK fails to load** (adblock or network), the game
+  plays on with no ads: commercials are skipped and rewarded offers grant
+  nothing. The local fake-ad mock **never** appears there.
+- The game shows on its first frame and never waits on the ad SDK. A tap that
+  arrives before the SDK is ready is queued as `gameplayStart`.
+- Production builds print nothing to the console; analytics console logging is on
+  only in dev or with `?debug=1`.
+- Arrow keys and space never scroll the page, there are no external links, and
+  no other ad networks are used.
+
+**Still yours to do before/at upload:**
+1. **Real-device check.** Play a few rounds on a mid-range Android phone and an
+   iPhone with `?debug=1` and confirm ~60 fps (the sandbox had no GPU). Load the
+   page with `?sdk=poki` to exercise the real SDK in its debug mode.
+2. Review Poki's current [integration requirements](https://sdk.poki.com/new-requirements)
+   (they change; I could not fetch that page from the build sandbox).
+3. Create the game in Poki for Developers, upload `junk-magnet-poki.zip`, and run
+   their Playtest/QA tooling.
+4. Store art (title, description, thumbnails) is needed for public release, not
+   for the Playtest stage. See the Phase 2 note on a rendered 512×512 thumbnail.
+5. Optional: add a real analytics sink (e.g. a `fetch` beacon) in `main.ts` if you
+   want event data beyond what Poki's dashboard shows.
 
 ### Useful URL params
 | Param | Effect |
@@ -28,13 +64,13 @@ To upload to Poki, zip the contents of `dist/` (`base: './'` keeps every path re
 | `?bot=1` | Autopilot that plays rounds. Used for balance tuning and automated tests. |
 | `?adfail=1` | Mock: every rewarded ad fails. Tests the "no reward" path. |
 | `?adcooldown=N` | Mock: commercial-break frequency cap in seconds (default 45, mimicking Poki). |
-| `?sdk=poki` | Force-load the real Poki SDK when not on a Poki domain. |
-| `?analytics=off` | Remove the console sink. |
+| `?sdk=poki` | Force-load the real Poki SDK when not on a Poki domain (falls back to no-ads if it can't load). |
+| `?analytics=off` | Remove the console sink in dev/debug (production has no console sink). |
 
 ## Final bundle size
 | File | Raw | Gzip |
 |---|---|---|
-| `assets/index-*.js` (game + three.js) | 566 KB | 151 KB |
+| `assets/index-*.js` (game + three.js) | 567 KB | 152 KB |
 | `assets/index-*.css` | 9.7 KB | 2.9 KB |
 | `index.html` | 1.6 KB | 0.8 KB |
 | **Total `dist/`** | **≈ 580 KB** | **≈ 155 KB** |
@@ -76,7 +112,7 @@ before any input.
 ### Code map
 ```
 src/config.ts          every tunable (round length, density, tiers, costs, ad rewards, combo, juice, camera, perf caps)
-src/core/sdk.ts        Poki SDK v2 wrapper + mock (lifecycle guards, audio mute during ads)
+src/core/sdk.ts        Poki SDK v2 wrapper + local mock + no-ads fallback (lifecycle guards, audio mute during ads)
 src/core/analytics.ts  event bus with pluggable sinks
 src/core/audio.ts      Web Audio synth: sfx + 16-step music loop
 src/core/input.ts      one-input steering
@@ -101,15 +137,17 @@ time-up, before every ad, and when the tab is hidden; `gameplayStart()` fires on
 resume. All game audio is muted (the AudioContext is suspended) for the entire
 duration of every ad.
 
-| # | Placement (`placement` id) | Type | Where / when it fires | Reward (only if SDK returns `true`) | Limit |
-|---|---|---|---|---|---|
-| – | `commercialBreak()` | Interstitial | Before **every** round start after the boot round: Play Again, Next Level, mode select, Play from the Garage, and the start following any rewarded offer (Poki decides whether an ad actually shows) | – | Poki-controlled |
-| 1 | `mega_magnet` | Rewarded | End-screen button "Next round with MEGA MAGNET" (the round-start decision) | ×2 pull radius + lift a tier early, for 20s | Every round |
-| 2 | `extra_time` | Rewarded | End screen of level/daily rounds, "+20 seconds" | Resumes the same round with 20s | Once per round |
-| 3 | `triple_coins` | Rewarded | End screen, "x3 coins" | +2× the round's coins | Once per round |
-| 4 | `upgrade_free` | Rewarded | Garage, "Free" under each upgrade | That upgrade tier for free | Once per upgrade tier |
-| 5 | `skin_try` | Rewarded | Garage, "Try 1 round" on locked skins | Next round starts with that truck, then it reverts | Every time |
-| 6 | `continue_run` | Rewarded | End screen of Scrapyard Rush, "Continue run (+25s)" | Resumes the run with 25s | Once per run |
+| # | Placement (`placement` id) | Type | Where / when it fires | Reward (only if SDK returns `true`) | Limit | Poki `size` |
+|---|---|---|---|---|---|---|
+| – | `commercialBreak()` | Interstitial | Before **every** round start after the boot round: Play Again, Next Level, mode select, Play from the Garage, and the start following any rewarded offer (Poki decides whether an ad actually shows) | – | Poki-controlled | – |
+| 1 | `mega_magnet` | Rewarded | End-screen button "Next round with MEGA MAGNET" (the round-start decision) | ×2 pull radius + lift a tier early, for 20s | Every round | medium |
+| 2 | `extra_time` | Rewarded | End screen of level/daily rounds, "+20 seconds" | Resumes the same round with 20s | Once per round | medium |
+| 3 | `triple_coins` | Rewarded | End screen, "x3 coins" | +2× the round's coins | Once per round | medium |
+| 4 | `upgrade_free` | Rewarded | Garage, "Free" under each upgrade | That upgrade tier for free | Once per upgrade tier | large |
+| 5 | `skin_try` | Rewarded | Garage, "Try 1 round" on locked skins | Next round starts with that truck, then it reverts | Every time | small |
+| 6 | `continue_run` | Rewarded | End screen of Scrapyard Rush, "Continue run (+25s)" | Resumes the run with 25s | Once per run | large |
+
+Sizes live in `REWARD_SIZE` in `src/ui/ui.ts`.
 
 Every rewarded button is optional, and **Play** is always the largest button.
 A failed or closed ad shows a friendly toast and grants nothing (verified with
@@ -121,7 +159,8 @@ In portrait on mobile, `--safe-top` / `--safe-bottom` = 90px keep the HUD,
 hint and all panels out of the banner zones.
 
 ## Analytics
-The default sink is console (`[analytics] name {…}`). Add your own with
+In dev and with `?debug=1` the sink is the console (`[analytics] name {…}`).
+Production has no sink until you add one with
 `analytics.addSink((name, data, t) => …)`.
 
 | Event | Data |
@@ -145,6 +184,14 @@ I drove the game in headless Chromium (Playwright, software WebGL) at every stag
   skin try reverting after one round, Suburb unlock, ramp launches (airborne,
   y≈1.7), Rush continue, Daily round, visibility pause/resume, and save
   persistence across reload. There were zero console errors.
+- Poki launch checks, all passing:
+  - **SDK stub:** a stand-in for the real SDK recorded the exact call sequence
+    (`init | gameLoadingFinished | gameplayStart | gameplayStop |
+    rewardedBreak:{"size":"medium","onStart":fn} | … | commercialBreak |
+    gameplayStart`). There were no double starts and no ad calls during gameplay.
+  - **SDK blocked on a Poki host:** the game was visible in ~1.1s, no fake ad UI
+    appeared, and rewarded offers granted nothing.
+  - **Production build:** silent console.
 - **Balance runs with `?bot=1`** (the bot plays far better than a new human):
   - Junkyard, no upgrades: smalls liftable by ~10s, fridges ~15s, cars ~20s, containers ~50s.
   - Junkyard result: 89% cleaned, ~207 coins.

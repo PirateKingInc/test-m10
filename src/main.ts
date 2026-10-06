@@ -13,7 +13,8 @@ async function boot() {
   const params = new URLSearchParams(location.search);
   const debug = params.get('debug') === '1';
   const overrides = debug || params.has('tune') ? applyConfigOverrides(location.search) : [];
-  if (params.get('analytics') !== 'off') analytics.addSink(consoleSink);
+  // console logging only in dev / ?debug=1 — production builds stay quiet (add a real sink for live data)
+  if ((import.meta.env.DEV || debug) && params.get('analytics') !== 'off') analytics.addSink(consoleSink);
 
   // SDK first (mock is instant; real Poki SDK loads in parallel with our parse)
   const sdkReady = ads.init();
@@ -31,13 +32,17 @@ async function boot() {
     (window as any).__game = game;
   }
 
+  // show the game on its first frame; never make the player wait on the ad SDK
+  requestAnimationFrame(() => {
+    const boot = document.getElementById('boot');
+    if (boot) {
+      boot.style.opacity = '0';
+      setTimeout(() => boot.remove(), 260);
+    }
+  });
+
   await sdkReady;
-  ads.loadingFinished();
-  const boot = document.getElementById('boot');
-  if (boot) {
-    boot.style.opacity = '0';
-    setTimeout(() => boot.remove(), 260);
-  }
+  ads.loadingFinished(); // queued gameplayStart (if the player already tapped) fires here
   analytics.track('load_complete', { ms: Math.round(performance.now() - t0), sinceNav: Math.round(performance.now()), mock: ads.isMock, sessions: save.stats.sessions });
 
   // audio unlock on any gesture, anywhere

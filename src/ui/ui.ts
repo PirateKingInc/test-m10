@@ -6,7 +6,7 @@
 import { CONFIG, UPGRADE_IDS, UpgradeId } from '../config';
 import { audio } from '../core/audio';
 import { todayKey } from '../core/rng';
-import { ads, resetOfferScreen, rewardedOfferShown } from '../core/sdk';
+import { ads, resetOfferScreen, rewardedOfferShown, RewardSize } from '../core/sdk';
 import type { Game, ModeSpec, Results } from '../game/game';
 import { dailySetup, LEVELS } from '../game/levels';
 import { hashString } from '../core/rng';
@@ -14,6 +14,16 @@ import { hashString } from '../core/rng';
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
 type Screen = 'end' | 'garage' | 'modes';
+
+/** Poki reward "size" per placement (bigger = more valuable, Poki may show longer ads). */
+const REWARD_SIZE: Record<string, RewardSize> = {
+  mega_magnet: 'medium',
+  extra_time: 'medium',
+  triple_coins: 'medium',
+  upgrade_free: 'large',
+  skin_try: 'small',
+  continue_run: 'large',
+};
 
 export class UI {
   private root: HTMLElement;
@@ -334,7 +344,7 @@ export class UI {
       if (ads.busy) return;
       this.busy = true;
       this.panel.classList.add('busy');
-      const ok = await ads.rewardedBreak(ad);
+      const ok = await ads.rewardedBreak(ad, REWARD_SIZE[ad] ?? 'medium');
       this.busy = false;
       this.panel.classList.remove('busy');
       if (!ok) {

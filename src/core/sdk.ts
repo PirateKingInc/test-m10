@@ -14,8 +14,14 @@ interface PokiLike {
   gameplayStart(): void;
   gameplayStop(): void;
   commercialBreak(onStart?: () => void): Promise<void>;
-  rewardedBreak(onStart?: () => void): Promise<boolean>;
+  rewardedBreak(opts?: RewardedOpts): Promise<boolean>;
   setDebug?(v: boolean): void;
+}
+
+export type RewardSize = 'small' | 'medium' | 'large';
+interface RewardedOpts {
+  size?: RewardSize;
+  onStart?: () => void;
 }
 
 declare global {
@@ -69,8 +75,8 @@ class MockPoki implements PokiLike {
     console.info('[PokiSDK mock] commercialBreak -> showing ad');
     await this.overlay('Commercial break (mock)', 1.2, false);
   }
-  async rewardedBreak(onStart?: () => void) {
-    onStart?.();
+  async rewardedBreak(opts?: RewardedOpts) {
+    opts?.onStart?.();
     const ok = await this.overlay('Rewarded ad (mock)', 2.0, true);
     this.lastCommercial = performance.now() / 1000; // Poki resets the commercial timer after rewarded
     return ok && !this.failRewarded;
@@ -103,6 +109,21 @@ class MockPoki implements PokiLike {
   }
 }
 
+/**
+ * Used on a Poki host when the real SDK could not load (network/adblock). Never shows
+ * fake ad UI there: commercials resolve instantly, rewarded ads report "no reward".
+ */
+class NoopPoki implements PokiLike {
+  async init() {}
+  gameLoadingFinished() {}
+  gameplayStart() {}
+  gameplayStop() {}
+  async commercialBreak() {}
+  async rewardedBreak() {
+    return false;
+  }
+}
+
 export class Ads {
   private sdk: PokiLike = new MockPoki(false);
   isMock = true;
@@ -116,13 +137,18 @@ export class Ads {
     const params = new URLSearchParams(location.search);
     const onPoki = /poki/.test(location.hostname) || params.get('sdk') === 'poki';
     if (onPoki) {
-      const ok = await loadScript(POKI_SRC, 4000);
+      const ok = !!window.PokiSDK || (await loadScript(POKI_SRC, 6000));
       if (ok && window.PokiSDK) {
         this.sdk = window.PokiSDK;
         this.isMock = false;
+      } else {
+        console.warn('[ads] Poki SDK unavailable — running without ads');
+        this.sdk = new NoopPoki();
+        this.isMock = false;
       }
+    } else {
+      this.sdk = new MockPoki(params.get('adfail') === '1', Number(params.get('adcooldown') ?? 45));
     }
-    if (this.isMock) this.sdk = new MockPoki(params.get('adfail') === '1', Number(params.get('adcooldown') ?? 45));
     try {
       await this.sdk.init();
     } catch {
@@ -195,7 +221,7 @@ export class Ads {
   }
 
   /** Returns true ONLY if the SDK confirms the reward. */
-  async rewardedBreak(placement: string): Promise<boolean> {
+  async rewardedBreak(placement: string, size: RewardSize = 'medium'): Promise<boolean> {
     if (this.adRunning) return false;
     const wasPlaying = this.inGameplay;
     this.gameplayStop();
@@ -204,7 +230,7 @@ export class Ads {
     analytics.track('rewarded_accepted', { placement });
     let ok = false;
     try {
-      ok = !!(await this.sdk.rewardedBreak(() => {}));
+      ok = (await this.sdk.rewardedBreak({ size, onStart: () => {} })) === true;
     } catch {
       ok = false;
     } finally {
