@@ -24,8 +24,19 @@ async function boot() {
   const save = loadSave();
   save.stats.sessions++;
   const canvas = document.getElementById('game') as HTMLCanvasElement;
-  const game = new Game(canvas, save);
+  const thumb = params.has('thumb');
+  const game = new Game(canvas, save, { offline: thumb });
   game.ui = new UI(game);
+  if (thumb) {
+    // promo thumbnails: stage scenes, render, hand PNG data URLs to scripts/thumbnails.mjs
+    document.getElementById('ui')!.style.display = 'none';
+    document.getElementById('boot')?.remove();
+    const { renderThumbnails } = await import('./game/thumbnail');
+    const sizes = (params.get('sizes') || '512,1080').split(',').map(Number);
+    const only = params.get('variants')?.split(',');
+    (window as any).__thumbs = renderThumbnails(game, sizes, only);
+    return;
+  }
   game.boot();
   if (debug) {
     mountDebug(game, overrides);

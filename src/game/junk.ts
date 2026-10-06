@@ -54,6 +54,7 @@ export interface Item {
   attachAge: number;
   aScale: number; // scale once attached (compaction)
   airborne: boolean; // picked while truck airborne
+  landed?: boolean; // DROP: already reported first touchdown
 }
 
 interface TypeInfo {
@@ -108,6 +109,7 @@ export class JunkSystem {
   private slotIndex = 0;
   onAttach: (e: PickupEvent) => void = () => {};
   onLiftStart: (i: Item) => void = () => {};
+  onLand: (i: Item) => void = () => {};
   heightAt: (x: number, z: number) => number = () => 0;
 
   constructor() {
@@ -218,6 +220,7 @@ export class JunkSystem {
     this.totalValue += it.value;
     if (drop) {
       it.state = JS.DROP;
+      it.landed = false;
       it.y = it.baseY + 18 + Math.random() * 10;
       it.vy = 0;
       this.active.push(it);
@@ -280,6 +283,52 @@ export class JunkSystem {
     ti.dirty = true;
   }
 
+  /** Start the pickup sequence for an IDLE/STRAIN item (magnet range or a pulse). */
+  lift(it: Item, airborne = false) {
+    const cfg = CONFIG.magnet;
+    this.gridRemove(it);
+    if (it.state !== JS.STRAIN) this.active.push(it);
+    it.state = JS.TEETER;
+    it.t = 0;
+    it.dur = cfg.teeterTime + cfg.teeterPerTier * it.tier;
+    it.airborne = airborne;
+    this.flying++;
+    this.onLiftStart(it);
+  }
+
+  /** Move a resting item to (x, z) and drop it from the sky (keeps level totals unchanged). */
+  dropAt(it: Item, x: number, z: number, height = 22) {
+    if (it.state !== JS.IDLE) return false;
+    this.gridRemove(it);
+    it.x = x;
+    it.z = z;
+    it.baseY = this.heightAt(x, z);
+    it.y = it.baseY + height;
+    it.vy = 0;
+    it.landed = false;
+    it.state = JS.DROP;
+    this.active.push(it);
+    return true;
+  }
+
+  /** Visit every resting (IDLE/STRAIN) item. */
+  forEachResting(fn: (it: Item) => void) {
+    for (const cell of this.grid) for (let i = cell.length - 1; i >= 0; i--) fn(cell[i]);
+  }
+
+  /** Anything left that this capacity can lift (resting, falling or in flight)? */
+  anyLiftable(capacity: number): boolean {
+    if (this.flying > 0) return true;
+    for (const it of this.active) if (it.state === JS.DROP && it.mass <= capacity) return true;
+    for (const cell of this.grid) for (const it of cell) if (it.mass <= capacity) return true;
+    return false;
+  }
+
+  /** Items currently falling (for drop shadows). */
+  forEachDropping(fn: (it: Item) => void) {
+    for (const it of this.active) if (it.state === JS.DROP) fn(it);
+  }
+
   /* ---------------- per-frame ---------------- */
   /**
    * @param mx, mz magnet (truck) position; my truck height
@@ -303,14 +352,7 @@ export class JunkSystem {
         if (Math.abs(it.y - my) > radius * 0.6 + 2.2) return; // other level (roof / ground)
         if (it.mass <= capacity) {
           if (this.flying >= maxFly) return;
-          this.gridRemove(it);
-          if (it.state !== JS.STRAIN) this.active.push(it);
-          it.state = JS.TEETER;
-          it.t = 0;
-          it.dur = cfg.teeterTime + cfg.teeterPerTier * it.tier;
-          it.airborne = airborne;
-          this.flying++;
-          this.onLiftStart(it);
+          this.lift(it, airborne);
         } else if (it.mass <= capacity * cfg.strainRatio) {
           if (it.state === JS.IDLE) {
             it.state = JS.STRAIN;
@@ -405,6 +447,8 @@ export class JunkSystem {
               this.gridInsert(it);
               remove = true;
             }
+            if (!it.landed) this.onLand(it);
+            it.landed = true;
           }
           this.writeStatic(it, it.vy * 0.01, 1, 0, 0, 1);
           break;
@@ -459,6 +503,56 @@ export class JunkSystem {
     if (lz > 0.5 && y < 0.6) lz = -lz; // keep the magnet face (front) clear
     it.local.set(Math.cos(theta) * r * out, y * out, lz * out);
     it.localQ.setFromEuler(new THREE.Euler(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28));
+  }
+
+  /* ---------------- staging (thumbnails / Phase 2 scripted moments) ---------------- */
+  /** Snap a resting item straight onto the pile (no animation, no events). */
+  attachNow(it: Item) {
+    if (it.state !== JS.IDLE && it.state !== JS.STRAIN) return;
+    this.gridRemove(it);
+    this.beginFly(it, 0);
+    it.state = JS.ATTACHED;
+    it.attachAge = 1;
+    this.attached.push(it);
+    this.attachedCount++;
+    this.collectedValue += it.value;
+    this.collectedMass += it.mass;
+    this.pileVolume += it.vol;
+    this.pileRadius = CONFIG.magnet.pileBase + CONFIG.magnet.pileVolumeK * Math.cbrt(this.pileVolume);
+  }
+
+  /** Put a resting item mid-flight from (x, y, z) toward the pile, frozen at progress `frac`. */
+  launchNow(it: Item, x: number, y: number, z: number, frac: number, spin = 0) {
+    if (it.state !== JS.IDLE && it.state !== JS.STRAIN) return;
+    this.gridRemove(it);
+    it.x = x;
+    it.y = y;
+    it.z = z;
+    it.rotY += spin;
+    this.writeStatic(it, spin * 0.3, 1, 0.5);
+    this.active.push(it);
+    this.beginFly(it, 0);
+    it.t = it.dur * frac;
+    this.flying++;
+  }
+
+  /** Change an item's paint (instance colour). */
+  repaint(it: Item, hex: number) {
+    it.paint.setHex(hex);
+    const ti = this.types[it.type];
+    ti.mesh.setColorAt(it.inst, it.paint);
+    if (ti.mesh.instanceColor) ti.mesh.instanceColor.needsUpdate = true;
+  }
+
+  /** Freeze a resting item in its teeter (tipping toward the magnet) at progress `frac`. */
+  teeterNow(it: Item, frac: number) {
+    if (it.state !== JS.IDLE) return;
+    this.gridRemove(it);
+    this.active.push(it);
+    it.state = JS.TEETER;
+    it.dur = 1;
+    it.t = frac;
+    this.flying++;
   }
 
   private buryExcess() {

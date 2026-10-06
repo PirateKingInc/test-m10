@@ -18,6 +18,8 @@ export const CONFIG = {
     length: 90, // seconds, standard level rounds
     endScreenDelay: 0.6, // "TIME!" slam before end screen (must be < 1s)
     warnAt: 5, // ticking beeps for the last N seconds
+    endWhenCleared: true, // end the round early ("CLEARED!") when nothing liftable is left
+    clearBonusPerSecond: 150, // score per second left at that moment
   },
 
   truck: {
@@ -134,6 +136,38 @@ export const CONFIG = {
 
   daily: {
     roundLength: 90,
+  },
+
+  /** Anti-dead-time assists (each can be toggled: ?debug=1&cfg.assist.pulse.enabled=false) */
+  assist: {
+    // a) junk from far away drops from the sky ahead of the player when the area runs dry
+    skyDrop: {
+      enabled: true,
+      minNearby: 6, // trigger when fewer liftable items than this are around the truck...
+      senseRadius: 14, // ...within this distance (+ pull radius)
+      idleDelay: 0.4, // ...and nothing has been picked up for this long
+      cooldown: 2,
+      count: 9, // items per drop
+      distMin: 6, // landing zone ahead of the truck
+      distMax: 15,
+      spread: 6,
+      height: 22, // fall height (fall ≈ 1s; the growing shadow is the telegraph)
+      teaserChance: 0.6, // also drop one "just too heavy" item
+    },
+    // b) magnet pulse: a shockwave that yanks distant liftable junk in
+    pulse: {
+      enabled: true,
+      idleDelay: 1.0, // auto-fires after this long without a pickup
+      cooldown: 3,
+      rangeMult: 2.6, // pulse range = pull radius * mult + add
+      rangeAdd: 6,
+      maxItems: 8,
+    },
+    // c) off-screen arrow toward the best nearby cluster of liftable junk
+    arrow: {
+      enabled: true,
+      idleDelay: 0.8, // show after this long with nothing liftable on screen
+    },
   },
 
   perf: {

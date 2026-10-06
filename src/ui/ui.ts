@@ -43,6 +43,11 @@ export class UI {
   private busy = false;
   private last = { time: '', pct: -1, score: -1, mega: '-', goal: '-', urgent: false };
   private comboTimer = 0;
+  private arrow: HTMLElement;
+  private arrowOn = false;
+  /** banner-safe insets in px (read from CSS vars) */
+  insetTop = 0;
+  insetBottom = 0;
 
   constructor(private game: Game) {
     this.root = document.getElementById('ui')!;
@@ -57,6 +62,7 @@ export class UI {
         <div class="mega" id="mega"></div>
       </div>
       <div id="hint" class="hidden"><div class="hint-track"><div class="hand">👆</div></div><div class="hint-text">Drag to steer</div></div>
+      <div id="arrow" class="hidden"><div class="arrow-in">➤</div></div>
       <div id="toasts"></div>
       <div id="combo"></div>
       <div id="timeup">TIME!</div>
@@ -73,6 +79,14 @@ export class UI {
     this.comboEl = $('#combo');
     this.timeupEl = $('#timeup');
     this.panel = $('#panel');
+    this.arrow = $('#arrow');
+    const readInsets = () => {
+      const cs = getComputedStyle(document.documentElement);
+      this.insetTop = parseFloat(cs.getPropertyValue('--safe-top')) || 0;
+      this.insetBottom = parseFloat(cs.getPropertyValue('--safe-bottom')) || 0;
+    };
+    readInsets();
+    window.addEventListener('resize', readInsets);
     this.panel.addEventListener('click', (e) => this.onClick(e));
     // block canvas steering through panels
     this.panel.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -144,6 +158,12 @@ export class UI {
       this.goalEl.textContent = goal;
       this.goalEl.style.display = goal ? '' : 'none';
     }
+    const a = g.assist.arrowScreen;
+    if (!!a !== this.arrowOn) {
+      this.arrowOn = !!a;
+      this.arrow.classList.toggle('hidden', !a);
+    }
+    if (a) this.arrow.style.transform = `translate(${a.x}px, ${a.y}px) translate(-50%, -50%) rotate(${a.angle}rad)`;
     const mega = g.megaLeft > 0 ? `🧲 MEGA ${Math.ceil(g.megaLeft)}` : '';
     if (mega !== this.last.mega) {
       this.last.mega = mega;
@@ -182,7 +202,7 @@ export class UI {
   }
 
   timeUp() {
-    this.timeupEl.textContent = this.game.mode.kind === 'rush' ? 'RUN OVER!' : 'TIME!';
+    this.timeupEl.textContent = this.game.mode.kind === 'rush' ? 'RUN OVER!' : this.game.clearedEarly ? 'CLEARED!' : 'TIME!';
     this.timeupEl.classList.add('on');
     this.showHint(false);
   }

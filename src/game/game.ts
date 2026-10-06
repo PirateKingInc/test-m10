@@ -16,6 +16,7 @@ import { Item, JunkSystem } from './junk';
 import { JUNK_TYPES } from './junkTypes';
 import { DailyGoal, generateLayout, Layout, LEVELS, levelById, LevelDef, ModeKind, dailySetup } from './levels';
 import { Truck } from './truck';
+import { Assist } from './assist';
 import { World } from './world';
 import type { UI } from '../ui/ui';
 
@@ -51,6 +52,33 @@ export interface Results {
   lifted: number;
 }
 
+export interface DeadTimeStats {
+  window: number; // seconds measured (final 30s of play)
+  pickups: number; // pickups in the window
+  maxGap: number; // longest stretch without a pickup
+  meanGap: number;
+  gapsOver3: number; // droughts longer than 3s
+  secOver3: number; // total seconds spent beyond 3s in droughts
+}
+
+/** Gaps between pickups in the last `window` seconds of play. */
+export function deadTime(times: number[], end: number, window = 30): DeadTimeStats {
+  const start = Math.max(0, end - window);
+  const pts = [start, ...times.filter((t) => t >= start && t <= end), end];
+  const gaps: number[] = [];
+  for (let i = 1; i < pts.length; i++) gaps.push(pts[i] - pts[i - 1]);
+  const over = gaps.filter((g) => g > 3);
+  const r = (x: number) => Math.round(x * 100) / 100;
+  return {
+    window: r(end - start),
+    pickups: pts.length - 2,
+    maxGap: r(Math.max(...gaps)),
+    meanGap: r((end - start) / Math.max(1, pts.length - 1)),
+    gapsOver3: over.length,
+    secOver3: r(over.reduce((a, g) => a + g - 3, 0)),
+  };
+}
+
 type State = 'boot' | 'attract' | 'playing' | 'timeup' | 'end' | 'loading';
 
 const TIER_NAMES = ['CANS', 'BIKES & DRUMS', 'FRIDGES', 'CARS', 'CONTAINERS'];
@@ -62,6 +90,10 @@ export class Game implements FeatureHost {
   junk = new JunkSystem();
   truck: Truck;
   particles = new Particles();
+  assist: Assist;
+  /** roundTime of every pickup this round (dead-time metrics) */
+  pickupTimes: number[] = [];
+  lastDeadTime: DeadTimeStats | null = null;
   rig = new CameraRig();
   input: Input;
   ui!: UI;
@@ -81,7 +113,7 @@ export class Game implements FeatureHost {
   score = 0;
   combo = 0;
   maxCombo = 0;
-  private lastPickupT = -10;
+  private lastPickupT = 0;
   private chainTime = 0;
   megaLeft = 0;
   private hitStop = 0;
@@ -103,18 +135,26 @@ export class Game implements FeatureHost {
 
   /** ?bot=1 — autopilot for tuning / automated tests */
   bot = new URLSearchParams(location.search).get('bot') === '1';
+  /** ?debug=1&speed=N — simulate N× faster than real time (bot measurements) */
+  simSpeed = (() => {
+    const p = new URLSearchParams(location.search);
+    return p.get('debug') === '1' ? Math.max(1, Math.min(16, Number(p.get('speed')) || 1)) : 1;
+  })();
   fps = 60;
   private frames = 0;
   private fpsT = 0;
   private last = performance.now();
 
-  constructor(canvas: HTMLCanvasElement, public save: SaveData) {
-    this.world = new World(canvas);
+  constructor(canvas: HTMLCanvasElement, public save: SaveData, opts: { offline?: boolean } = {}) {
+    this.world = new World(canvas, opts);
     this.truck = new Truck({ ring: 0xff3c38 });
     this.world.scene.add(this.junk.group, this.truck.root, this.truck.magnet, this.truck.ring, this.truck.shadow, this.particles.mesh);
     this.junk.heightAt = this.world.heightAt;
     this.junk.onAttach = (e) => this.onAttach(e.item);
     this.junk.onLiftStart = () => audio.whoosh();
+    this.junk.onLand = (it) => this.onJunkLand(it);
+    this.assist = new Assist(this);
+    this.world.scene.add(this.assist.group);
     this.input = new Input(canvas);
     this.input.onAnyInput = () => this.onFirstInput();
     audio.setMuted(save.muted);
@@ -238,6 +278,11 @@ export class Game implements FeatureHost {
     }
   }
 
+  /** Build a round without starting play (thumbnail staging / tools). */
+  stageRound(mode: ModeSpec) {
+    this.buildRound(mode, {});
+  }
+
   private buildRound(mode: ModeSpec, opts: RoundOpts) {
     const t0 = performance.now();
     this.mode = mode;
@@ -278,7 +323,10 @@ export class Game implements FeatureHost {
     this.score = 0;
     this.combo = 0;
     this.maxCombo = 0;
-    this.lastPickupT = -10;
+    this.lastPickupT = 0;
+    this.pickupTimes = [];
+    this.clearedEarly = false;
+    this.assist.reset();
     this.megaLeft = opts.mega ? CONFIG.rewarded.megaMagnetDuration : 0;
     this.hitStop = 0;
     this.liftTier = 0;
@@ -317,7 +365,7 @@ export class Game implements FeatureHost {
     }
     this.input.update();
     // fixed-size sub-steps keep physics stable and real-time on slow devices
-    let left = dt;
+    let left = dt * this.simSpeed;
     do {
       const step = Math.min(left, 1 / 30);
       left -= step;
@@ -376,10 +424,18 @@ export class Game implements FeatureHost {
       }
       const radius = this.radius();
       this.junk.update(dt, this.truck.x, this.truck.y, this.truck.z, radius, cap, this.truck.pileMatrix, s === 'attract' || s === 'playing', this.truck.airborne);
+      if (s === 'playing' && this.timerRunning) this.assist.update(dt);
+      else this.assist.arrowTarget = null;
+      this.assist.visual(dt, window.innerWidth, window.innerHeight, this.ui?.insetTop ?? 0, this.ui?.insetBottom ?? 0);
 
       if (s === 'playing') {
         for (const f of this.features) f.update?.(this, dt);
         this.roundTime += dt;
+        this.clearCheckT -= dt;
+        if (CONFIG.round.endWhenCleared && this.clearCheckT <= 0 && this.timerRunning && this.mode.kind !== 'rush') {
+          this.clearCheckT = 0.5;
+          if (!this.junk.anyLiftable(this.capacity)) this.levelCleared();
+        }
         if (this.timerRunning) {
           const drain = this.mode.kind === 'rush' ? 1 + (this.roundTime / 60) * CONFIG.rush.drainPerMinute : 1;
           this.timeLeft -= dt * drain;
@@ -430,8 +486,35 @@ export class Game implements FeatureHost {
         return this.botEscDir;
       }
     }
-    const n = this.junk.nearestIdle(this.truck.x, this.truck.z, this.capacity, 45);
-    return n ? [n.x - this.truck.x, n.z - this.truck.z] : null;
+    // what a player would do: chase visible junk, else follow the arrow, else wander
+    const n = this.assist.nearestVisible;
+    if (n && n.state <= 1) return [n.x - this.truck.x, n.z - this.truck.z];
+    const a = this.assist.arrowTarget;
+    if (a) return [a.x - this.truck.x, a.z - this.truck.z];
+    this.botWanderT -= dt;
+    const edge = this.world.half - 12;
+    if (Math.abs(this.truck.x) > edge || Math.abs(this.truck.z) > edge) {
+      this.botWander = Math.atan2(-this.truck.x, -this.truck.z) + (Math.random() - 0.5);
+      this.botWanderT = 2;
+    } else if (this.botWanderT <= 0) {
+      this.botWander = this.truck.heading + (Math.random() - 0.5) * 2.2;
+      this.botWanderT = 2.5;
+    }
+    return [Math.sin(this.botWander), Math.cos(this.botWander)];
+  }
+  private botWander = 0;
+  private botWanderT = 0;
+
+  sinceLastPickup() {
+    return this.roundTime - this.lastPickupT;
+  }
+
+  private onJunkLand(it: Item) {
+    if (this.state !== 'playing' && this.state !== 'attract') return;
+    audio.dropThud();
+    this.particles.ring(it.x, it.baseY, it.z, 8, 0xf1e3c8, it.radius * 1.4);
+    const d = Math.hypot(it.x - this.truck.x, it.z - this.truck.z);
+    if (d < 25) this.rig.shake(0.04 + it.tier * 0.03);
   }
 
   /** Push the truck out of junk that is too heavy to lift. */
@@ -467,6 +550,7 @@ export class Game implements FeatureHost {
     if (this.roundTime - this.lastPickupT <= C.window) this.combo++;
     else this.combo = 1;
     this.lastPickupT = this.roundTime;
+    if (this.state === 'playing') this.pickupTimes.push(this.roundTime);
     this.maxCombo = Math.max(this.maxCombo, this.combo);
     const mult = Math.min(C.maxMult, 1 + (this.combo - 1) * C.multPerStep);
     const air = it.airborne ? 2 : 1;
@@ -512,7 +596,21 @@ export class Game implements FeatureHost {
   /* ------------------------------------------------------------ */
   /* Round end                                                     */
   /* ------------------------------------------------------------ */
+  private clearCheckT = 0;
+  /** Nothing liftable left: end early and pay out the remaining time. */
+  private levelCleared() {
+    const secs = Math.ceil(this.timeLeft);
+    this.clearedEarly = true;
+    this.score += secs * CONFIG.round.clearBonusPerSecond;
+    this.toast(`LEVEL CLEARED! +${(secs * CONFIG.round.clearBonusPerSecond).toLocaleString()}`);
+    audio.powerUp();
+    this.timeLeft = 0;
+    this.timeUp();
+  }
+  clearedEarly = false;
+
   private timeUp() {
+    this.lastDeadTime = deadTime(this.pickupTimes, this.roundTime);
     this.state = 'timeup';
     this.timerRunning = false;
     ads.gameplayStop();
@@ -605,10 +703,13 @@ export class Game implements FeatureHost {
       maxCombo: this.maxCombo,
       lifted: this.junk.attachedCount,
       continued: this.extraTimeUsed || this.continueUsed,
+      deadTime: this.lastDeadTime,
+      clearedEarly: this.clearedEarly,
+      assist: { ...this.assist.stats, arrowSec: Math.round(this.assist.stats.arrowSec * 10) / 10 },
     });
     return {
       mode,
-      title: mode.kind === 'rush' ? 'RUN OVER!' : "TIME'S UP!",
+      title: mode.kind === 'rush' ? 'RUN OVER!' : this.clearedEarly ? 'CLEARED!' : "TIME'S UP!",
       score: this.score,
       pct,
       stars,
@@ -621,7 +722,7 @@ export class Game implements FeatureHost {
       dailyDone,
       dailyJustDone,
       unlocked,
-      canExtraTime: mode.kind === 'rush' ? !this.continueUsed : !this.extraTimeUsed,
+      canExtraTime: mode.kind === 'rush' ? !this.continueUsed : !this.extraTimeUsed && !this.clearedEarly,
       canTriple: !this.tripleUsed && total > 0,
       nextMode,
       maxCombo: this.maxCombo,

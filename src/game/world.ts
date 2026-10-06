@@ -13,10 +13,10 @@ export class World {
   half = 50;
   readonly isMobile: boolean;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, opts: { offline?: boolean } = {}) {
     this.isMobile = matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
     const dpr = Math.min(window.devicePixelRatio || 1, this.isMobile ? CONFIG.perf.pixelRatioMobile : CONFIG.perf.pixelRatioDesktop);
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: dpr < 1.5, powerPreference: 'high-performance', stencil: false });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: dpr < 1.5 || !!opts.offline, powerPreference: 'high-performance', stencil: false, preserveDrawingBuffer: !!opts.offline });
     this.renderer.setPixelRatio(dpr);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 

@@ -151,6 +151,26 @@ export class AudioEngine {
     this.tone('sawtooth', 70, 60, t, 0.02, 0.025, 0.2);
   }
 
+  /** magnet pulse: low "vwomm" sweep + shimmer */
+  pulse() {
+    if (!this.ok) return;
+    const t = this.ctx!.currentTime;
+    this.tone('sawtooth', 90, 340, t, 0.01, 0.12, 0.35);
+    this.tone('sine', 180, 720, t, 0.01, 0.2, 0.3);
+    this.noiseHit(t, 600, 1.5, 0.12, 0.35, 'bandpass', this.sfx, 3000);
+  }
+
+  private lastThud = 0;
+  /** quieter thud for junk landing from the sky (rate-limited) */
+  dropThud() {
+    if (!this.ok) return;
+    const t = this.ctx!.currentTime;
+    if (t - this.lastThud < 0.12) return;
+    this.lastThud = t;
+    this.tone('sine', 110, 45, t, 0.003, 0.35, 0.18);
+    this.noiseHit(t, 400, 0.8, 0.18, 0.12, 'lowpass');
+  }
+
   thud() {
     if (!this.ok) return;
     const t = this.ctx!.currentTime;
