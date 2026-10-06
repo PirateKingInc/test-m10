@@ -21,7 +21,7 @@ npm run thumbnails # render promo thumbnails -> thumbnails/*.png (see below)
 ```
 
 ## Submitting to Poki
-`npm run package` produces `junk-magnet-poki.zip` (≈169 KB) with `index.html`
+`npm run package` produces `junk-magnet-poki.zip` (≈168 KB) with `index.html`
 at the zip root. Every path is relative (`base: './'`), so it runs from any
 sub-path or iframe.
 
@@ -39,8 +39,11 @@ sub-path or iframe.
   nothing. The local fake-ad mock **never** appears there.
 - The game shows on its first frame and never waits on the ad SDK. A tap that
   arrives before the SDK is ready is queued as `gameplayStart`.
-- Production builds print nothing to the console; analytics console logging is on
-  only in dev or with `?debug=1`.
+- Production builds print nothing to the console.
+- **No external requests and no analytics.** The only network request outside the
+  game's own files is the Poki SDK script, which loads only on Poki hosts. There
+  are no CDNs, web fonts, remote assets or telemetry; the game's audio is synthesized.
+  This was verified with a network log of full sessions; see *Pre-submission checks*.
 - Arrow keys and space never scroll the page, there are no external links, and
   no other ad networks are used.
 
@@ -54,13 +57,12 @@ sub-path or iframe.
    their Playtest/QA tooling.
 4. Store art (title, description, thumbnails) is needed for public release, not
    for the Playtest stage. See the Phase 2 note on a rendered 512×512 thumbnail.
-5. Optional: add a real analytics sink (e.g. a `fetch` beacon) in `main.ts` if you
-   want event data beyond what Poki's dashboard shows.
+5. Keep the game off public URLs (Poki deals are web-exclusive): see *Pre-submission checks*.
 
 ### Useful URL params
 | Param | Effect |
 |---|---|
-| `?debug=1` | Debug overlay (FPS, draw calls, growth stats, analytics counters and the live event log). Also exposes `window.__game`. |
+| `?debug=1` | Debug overlay (FPS, draw calls, growth and readability stats; local only, nothing is recorded or sent). Also exposes `window.__game`. |
 | `?debug=1&cfg.round.length=30&cfg.magnet.baseRadius=4` | Override any numeric/boolean value in `src/config.ts` without touching code (also enabled by `?tune=1`). |
 | `?bot=1&skill=novice\|average\|skilled` | Autopilot that plays like a player at three skill levels. All of them only "see" junk that is **on screen**. **novice**: ~400ms reactions, sloppy aim, follows the arrow half the time, gets distracted. **average** (default): chases the nearest visible junk, follows the arrow, else wanders. **skilled**: instant reactions, keeps combo chains alive, routes toward dense and valuable clusters, remembers where junk is. Used for balance measurement and automated tests. |
 | `?debug=1&speed=N` | Simulate N× faster than real time (max 16), for quick bot measurements. |
@@ -68,16 +70,54 @@ sub-path or iframe.
 | `?adfail=1` | Mock: every rewarded ad fails. Tests the "no reward" path. |
 | `?adcooldown=N` | Mock: commercial-break frequency cap in seconds (default 45, mimicking Poki). |
 | `?sdk=poki` | Force-load the real Poki SDK when not on a Poki domain (falls back to no-ads if it can't load). |
-| `?analytics=off` | Remove the console sink in dev/debug (production has no console sink). |
+
+## Pre-submission checks (Phase 1 upload)
+These were run on the production build in headless Chromium. Poki's requirements page
+(`sdk.poki.com/requirements`) is blocked from the build sandbox, so the checks follow
+the requirement list given in the pre-submission brief.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Full regression | ✅ 22/22 pass | 14 game-flow and 8 Poki SDK checks. They cover the core loop, all 6 rewarded placements, the skin try, Mega Magnet, continue, daily, save and hide/show, the SDK call order, the no-SDK fallback, and no fake ad UI on Poki hosts. |
+| Zero network calls except the Poki SDK | ✅ | Network log of full sessions on desktop and phone: a plain keyboard session, and a scripted session through every screen and a rewarded flow. It ran across 9 viewports plus a forced Poki-SDK load. Result: 42 same-origin requests, 1 external (`game-cdn.poki.com/scripts/v2/poki-sdk.js`), no websockets. The bundle contains no other URL. |
+| In-game analytics removed | ✅ | `src/core/analytics.ts` and every tracking call deleted. |
+| Canvas fills the screen | ✅ | The canvas is the full viewport with no scroll at 16:9 desktop sizes from 640×360 to 1920×1080, in phone portrait and landscape, and on tablets in both orientations. It renders at device pixel ratio, capped at 1.5 on mobile. |
+| Initial download < 8 MB | ✅ | 167 KB gzipped (615 KB raw). |
+| Mobile controls on tablets; desktop instructions | ✅ fixed | Drag-to-steer works on every device with no detection needed. The first-round hint now reads "Click & drag, or WASD / arrow keys" on mouse devices and "Drag to steer" on touch devices, including iPads. |
+| Standard button ≥ reward button (6 placements) | ✅ | Measured on desktop and phone: Play beats extra time, ×3 coins, Mega Magnet and continue run. The coin-buy button (44 px high) beats the ad button (42 px, same width) for free upgrade and skin try. |
+| No branding, external links or other ads | ✅ | No `<a>` links in the build and no other ad network. |
+| Poki SDK events | ✅ | `init` → `gameLoadingFinished` → `gameplayStart` on first input, `gameplayStop` before every ad and at round end, no duplicates. `rewardedBreak({size, onStart})`. |
+| Real-phone performance | ❌ not done | No physical devices are available to the build sandbox. Needs a person; see the report. |
+| Off public URLs | ⚠️ partly | The Pages deploy workflow was removed and the game files on `gh-pages` were deleted. The GitHub repo itself is still public, and Pages is still enabled in its settings. |
+
+### Changelog since the last real-player test
+- **Size = power:** the truck grows with lift capacity, with a power-up pop at each new tier.
+- **Liftable at a glance:**
+  - liftable junk gets a bright outline and leans toward the truck;
+  - too-heavy junk is desaturated and darker, and bumping it gives a clank and a "TOO HEAVY" pop with a progress bar;
+  - a newly liftable tier flashes, with "NOW LIFTING …!".
+- **HUD and ring:** the HUD shows the next tier's icon with a progress bar. The pull-radius ring is fainter and pulses on each pickup.
+- **Models:**
+  - fridges and washers are 25% bigger and bikes slightly shorter, so each tier is visibly bigger than the last;
+  - pickup reach is unchanged.
+- **Driving:**
+  - big trucks can climb ramps;
+  - Suburb street ramps are now two-sided humps that still launch the truck;
+  - collision is capped at 1.25× the original growth curve so yards stay reachable.
+- **Camera** starts closer while the truck is small.
+- **Desktop** shows mouse and keyboard instructions.
+- **Removed:**
+  - in-game analytics (Poki dashboard and recordings instead);
+  - the GitHub Pages deploy.
 
 ## Final bundle size
 | File | Raw | Gzip |
 |---|---|---|
-| `assets/index-*.js` (game + three.js) | 600 KB | 161 KB |
+| `assets/index-*.js` (game + three.js) | 597 KB | 160 KB |
 | `assets/thumbnail-*.js` (lazy, only loaded with `?thumb=1`) | 4.8 KB | 2.3 KB |
 | `assets/index-*.css` | 11.7 KB | 3.4 KB |
 | `index.html` | 1.6 KB | 0.8 KB |
-| **Total `dist/`** | **≈ 618 KB** | **≈ 168 KB** (zip: 169 KB) |
+| **Total `dist/`** | **≈ 615 KB** | **≈ 167 KB** (zip: 168 KB) |
 
 That is well under the 5 MB target, with no images, models or audio files.
 Under 4× CPU throttling, a 4G-like network profile and software WebGL (headless
@@ -110,14 +150,13 @@ before any input.
 - **Saves**: versioned localStorage (stars, coins, upgrades, free-upgrade usage,
   skins, best scores/% per mode, daily status, mute, stats). Every access is wrapped
   in try/catch and merged with defaults.
-- **Poki SDK + mock**, **analytics** with pluggable sinks, **debug overlay**, and a
+- **Poki SDK + mock**, **debug overlay**, and a
   **single config file** (`src/config.ts`).
 
 ### Code map
 ```
 src/config.ts          every tunable (round length, density, tiers, costs, ad rewards, combo, juice, camera, perf caps)
 src/core/sdk.ts        Poki SDK v2 wrapper + local mock + no-ads fallback (lifecycle guards, audio mute during ads)
-src/core/analytics.ts  event bus with pluggable sinks
 src/core/audio.ts      Web Audio synth: sfx + 16-step music loop
 src/core/input.ts      one-input steering
 src/core/save.ts       localStorage persistence
@@ -160,30 +199,21 @@ Sizes live in `REWARD_SIZE` in `src/ui/ui.ts`.
 
 Every rewarded button is optional, and **Play** is always the largest button.
 A failed or closed ad shows a friendly toast and grants nothing (verified with
-`?adfail=1` and the mock's close button). Analytics logs each offer as
-`rewarded_offer_shown` → `rewarded_accepted` → `rewarded_completed` /
-`rewarded_failed`.
+`?adfail=1` and the mock's close button).
 
 In portrait on mobile, `--safe-top` / `--safe-bottom` = 90px keep the HUD,
 hint and all panels out of the banner zones.
 
 ## Analytics
-In dev and with `?debug=1` the sink is the console (`[analytics] name {…}`).
-Production has no sink until you add one with
-`analytics.addSink((name, data, t) => …)`.
+**None in the build.** Poki blocks external requests by default and always blocks
+Google Analytics, so the in-game event bus was removed. Player data comes from
+the Poki dashboard and playtest recordings.
 
-| Event | Data |
-|---|---|
-| `load_complete` | ms to ready, mock flag, session count |
-| `first_input` / `first_pickup` | seconds since load |
-| `round_start` | mode, level, build ms, mega, tried skin |
-| `round_end` | mode, level, score, % cleaned, duration, stars, coins, max combo, pieces lifted, continued, `clearedEarly`, `deadTime` (final-30s pickup gaps: max, mean, count > 3s, seconds beyond 3s), `assist` (drops, pulses, arrow seconds). In debug builds, `game.lastRoundStats` adds the whole-round longest drought, assisted-pickup share, early-end reason (`cleared` / `stuck`), seconds lost and drought logs. |
-| `rewarded_offer_shown` / `_accepted` / `_completed` / `_failed` | placement |
-| `commercial_break` | – |
-| `upgrade_purchase` | id, level, cost, via (`coins`/`rewarded`) |
-| `skin_purchase` | id, cost |
-| `session_length` | seconds, rounds, reason (`hidden`/`pagehide`) |
-| `round_end` readability fields | `bonks`, `bonkRate` (bumps into too-heavy junk per minute), `firstPickupT`, `tierUnlockT` (seconds of play when each tier unlocked), `steerLiftPct` (% of steering time aimed at liftable junk). Also shown live in `?debug=1`. |
+For balance work, `game.lastRoundStats` and the `?debug=1` overlay still compute
+per-round numbers locally: % cleaned, stars, coins, droughts, the assisted-pickup
+share, and the readability stats (`bonks`, `bonkRate`, `firstPickupT`,
+`tierUnlockT`, `steerLiftPct`). The bot harness reads them. They never leave the
+page.
 
 ## Testing done
 I drove the game in headless Chromium (Playwright, software WebGL) at every stage:
@@ -238,7 +268,7 @@ because one sweep through a cluster lifts many items.
   junk, follows the arrow when that flag is on, and otherwise wanders. An
   omniscient bot would make the arrow pointless to measure.
 - Each run is a fresh save (no upgrades) at `speed=6`.
-- **Metrics** (also sent in `round_end`): pickups in the final 30s, mean and max
+- **Metrics** (from `lastRoundStats`): pickups in the final 30s, mean and max
   gap between pickups, the number of gaps over 3s, and total seconds spent beyond
   3s, plus % cleaned.
 - **Scenarios:** Junkyard on desktop landscape (720×405), and Suburb in phone
@@ -447,7 +477,7 @@ than ~3.5s.
 - **Five runs per skill is a small sample.** Single runs swing 30+ percentage
   points, because whether a run snowballs into cars and containers is
   threshold-like. Treat these numbers as direction, and calibrate stars from
-  Player Fit Test `round_end` data. Every value is in `config.ts` and `levels.ts`.
+  Player Fit Test data and playtest recordings. Every value is in `config.ts` and `levels.ts`.
 - **The bots never use ads.** Rewarded upgrades and Mega Magnet make every
   progression path faster for real players than shown here.
 - **The 3★ line is a trade-off.** Scored post-hoc on the same runs, a 90% line
@@ -540,8 +570,8 @@ Pickup feel and balance numbers are unchanged, except where noted below.
   - **Result:** a max-size truck (10.5 units) now drives the full length of all 6
     Suburb roads in the test.
 
-### New analytics (Poki playtest checks)
-These are in the `?debug=1` overlay and in `round_end` (and `lastRoundStats`):
+### New readability stats (local, for bots and debugging)
+These are in the `?debug=1` overlay and in `game.lastRoundStats` (local only, never sent):
 
 | Metric | Field | What good looks like |
 |---|---|---|
@@ -715,20 +745,20 @@ if the next balance pass needs it:
 |---|---|---|
 | 1. Fun within 10s, no title wall, no tutorial text | ✅ | The page loads straight into Junkyard. An autopilot "attract" drives the truck into a can cluster (first CLUNK ~1s after load). The animated hand plus "Drag to steer" hides after the first pickup and returns if there is still no input 2.5s later. *Shortfall:* a ~0.3–1.5s loader bar shows during JS parse. *Fix:* inline a tiny CSS truck animation into the loader so even that moment is on-brand. |
 | 2. One input, no buttons in gameplay | ✅ | Drag/hold (floating joystick) or WASD/arrows. The HUD has no buttons, and the mute toggle lives on the end/modes screens. *Shortfall:* there is no manual pause; it pauses automatically when the tab is hidden, which Poki allows. |
-| 3. Constant reward drip, "just too big" always nearby | ✅ | Dense opening lane. Clusters always mix in the next tier up, food is scattered around big items, and a uniform scatter fills the remaining area. Too-heavy items within 3× capacity wobble. Sky drops are ~45% "one tier too heavy" goals. **Adaptive** assists (pulse, sky drop, arrow, early end) keep the longest drought at ~3s for every bot skill: **0 of 82 Suburb rounds over 3.5s**, and at most 1 in 64 Junkyard rounds at 3.7s (see *Difficulty retune*). *Caveat:* these are bot measurements; confirm with Player Fit Test data (`round_end.deadTime`). |
+| 3. Constant reward drip, "just too big" always nearby | ✅ | Dense opening lane. Clusters always mix in the next tier up, food is scattered around big items, and a uniform scatter fills the remaining area. Too-heavy items within 3× capacity wobble. Sky drops are ~45% "one tier too heavy" goals. **Adaptive** assists (pulse, sky drop, arrow, early end) keep the longest drought at ~3s for every bot skill: **0 of 82 Suburb rounds over 3.5s**, and at most 1 in 64 Junkyard rounds at 3.7s (see *Difficulty retune*). *Caveat:* these are bot measurements; confirm with Poki playtest recordings. |
 | 4. Visible growth, no number needed | ✅ | **Size = power:** the truck grows from 1.6 to 10.5 units with its lift capacity, always bigger than what it can lift and about the size of the next tier, with a pop when a tier unlocks. Liftable junk is outlined in the magnet's color; too-heavy junk is darker and gray. The pile grows, the camera zooms out, and the HUD shows the next tier's silhouette filling up. *Shortfall:* at very large sizes the pile can partially bury the magnet. *Fix:* mount the magnet on a boom that extends with pile radius. |
 | 5. Satisfying physics and juice | ✅ | Teeter/hop/tumble before snapping on, squash & stretch on truck and items, hit-stop on large/huge pickups, screen shake scaled by tier, particles, rising clunk pitch for chained pickups, chimes, and a **combo multiplier** (x2 at a 15-chain, x3 at 40) with its own HUD pill and arpeggio sting. *Shortfall:* pickups are scripted rather than simulated, so nothing falls off the pile. *Fix:* when the pile grows, occasionally shed a few small items that bounce off. |
 | 6. Short rounds, instant retry, end screen < 1s | ✅ | "TIME!" slam, then the end screen at 0.6s with stars, % cleaned, score, best (with NEW BEST), coins, and "next goal" lines (next star threshold and the coins still needed for the cheapest upgrade). One tap on PLAY AGAIN starts the next round. |
 | 7. Light meta, ~1 upgrade per round | ✅ | Tiers cost 90–420 coins. An average player earns ~165–200 coins per round (less in Suburb), skilled players more through combo multipliers, and assisted pickups pay ¼. Magnet Power (+30% pull, +35% lift per tier) is what opens 3★, so every purchase is felt. Measured: average reaches Junkyard 3★ with ~3–4 tiers and Suburb with ~4 (*Difficulty retune*). The "Free" rewarded offer per tier speeds this up for players who watch ads. |
 | Portrait-first, responsive | ✅ | Camera framing adapts to aspect ratio (it keeps visible width in portrait) and updates live on resize/orientation change. Touch targets are ≥48px, and the 90px banner-safe zones are enforced in portrait. |
 | 60fps on mid-range phones | ⚠️ Not measured on a device | About 28 draw calls and ~115k triangles at round start regardless of junk count (instancing per type, static decor merged into 1 mesh; the liftable outline adds one instanced draw per liftable junk type, so up to ~37 calls once everything is liftable), pooled particles and junk, max 36 flying bodies, junk outside the magnet's grid cells never touched (sleeping), DPR capped at 1.5 on mobile, no real-time shadows. The sandbox had no GPU, so FPS numbers there are meaningless. **Check on a real phone with `?debug=1`.** |
-| Build < 5MB, playable < 3s | ✅ | ~618KB total (169 KB zip). ~1.5s to playable under throttled conditions. |
+| Build < 5MB, playable < 3s | ✅ | ~615KB total (168 KB zip). ~1.5s to playable under throttled conditions. |
 
 ## Next 5 changes most likely to raise average playtime and rewarded opt-in (ranked)
 *(Shipped since the last list: late-round dead time, star/economy calibration against bots, and the playtest-1 readability fix. See above.)*
 1. **Re-fit stars and costs on real Player Fit Test data, and check readability** (playtime). The bots separate novice from average less than real players will.
-   - **Stars and costs:** use `round_end` (pct, stars, `deadTime`, coins) to set the 2★ and 3★ lines so the median first-session player gets 2★ on Junkyard and 3★ needs 2–3 upgrades.
-   - **Readability:** watch `bonkRate` and `steerLiftPct` to confirm players now read the size rule. If bonks stay high in the first minute, thicken the outline (`OUTLINE_THICK`) or darken heavy junk further (`highlight.heavyDark`).
+   - **Stars and costs:** use the Poki dashboard and playtest recordings to set the 2★ and 3★ lines so the median first-session player gets 2★ on Junkyard and 3★ needs 2–3 upgrades.
+   - **Readability:** watch playtest recordings for players bumping into too-heavy junk. If that persists past the first minute, thicken the outline (`OUTLINE_THICK`) or darken heavy junk further (`highlight.heavyDark`).
    - All config-only.
 2. **First Mega Magnet free, then a pre-round "Mega Magnet" card** (rewarded opt-in). Mega Magnet (2× pull plus lift) now directly unlocks containers, which 3★ needs. That makes it the most valuable ad in the game, and the first free use teaches exactly that.
 3. **"Combo master" goals** (playtime for skilled players). Add per-level combo targets on the end screen (e.g. "reach a 40-chain for x3") and a small coin bonus for a new best combo. Skilled players currently hit 3★ in 1–3 rounds; this gives them a reason to keep replaying.

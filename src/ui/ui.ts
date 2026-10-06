@@ -34,6 +34,10 @@ const REWARD_SIZE: Record<string, RewardSize> = {
   continue_run: 'large',
 };
 
+/** touch devices (phones, tablets incl. iPadOS) get the drag hint; mouse/keyboard devices get keys too */
+const TOUCH = typeof navigator !== 'undefined' && (navigator.maxTouchPoints > 0 || matchMedia('(pointer: coarse)').matches);
+const HINT_TEXT = TOUCH ? 'Drag to steer' : 'Click &amp; drag, or WASD / arrow keys';
+
 export class UI {
   private root: HTMLElement;
   private hud: HTMLElement;
@@ -81,7 +85,7 @@ export class UI {
         </div>
         <div class="mega" id="mega"></div>
       </div>
-      <div id="hint" class="hidden"><div class="hint-track"><div class="hand">👆</div></div><div class="hint-text">Drag to steer</div></div>
+      <div id="hint" class="hidden"><div class="hint-track"><div class="hand">👆</div></div><div class="hint-text">${HINT_TEXT}</div></div>
       <div id="arrow" class="hidden"><div class="arrow-in">➤</div></div>
       <div id="toasts"></div>
       <div id="combo"></div>
