@@ -102,7 +102,9 @@ export class Truck {
     this.body.clear();
     this.magnet.clear();
     this.wheels = [];
-    this.bodyMesh = new THREE.Mesh(buildBody(skin), this.mat);
+    const bodyGeo = buildBody(skin);
+    this.length = bodyGeo.boundingBox!.max.z - bodyGeo.boundingBox!.min.z;
+    this.bodyMesh = new THREE.Mesh(bodyGeo, this.mat);
     this.body.add(this.bodyMesh);
     const wg = buildWheel(skin);
     const r = skin.bigWheels ? 0.62 : 0.45;
@@ -135,7 +137,28 @@ export class Truck {
     this.squash = this.squashV = 0;
     this.sway.set(0, 0);
     this.swayV.set(0, 0);
-    this.scale = 1;
+    this.scaleV = 0;
+  }
+
+  /** collision size: follows the visual size, capped by the game (big trucks must still reach Suburb yards) */
+  collisionScale = 1;
+  /** body length at scale 1 (world units) */
+  length = 3.45;
+  /** visual size target (set from lift capacity every frame) */
+  targetScale = 1;
+  private scaleV = 0;
+
+  /** Size = power: spring the visual scale toward its target (overshoot = pop). */
+  stepScale(dt: number) {
+    const S = CONFIG.sizing;
+    this.scaleV += ((this.targetScale - this.scale) * S.spring - this.scaleV * S.damping) * dt;
+    this.scale = Math.max(S.minScale * 0.8, this.scale + this.scaleV * dt);
+  }
+
+  /** "Power up" pop when a new tier unlocks: kick the spring and squash. */
+  pop() {
+    this.scaleV += this.targetScale * 4;
+    this.bump(0.35);
   }
 
   /** Physical squash impulse (pickups, landings). */
@@ -176,15 +199,26 @@ export class Truck {
     const fx = Math.sin(this.heading);
     const fz = Math.cos(this.heading);
     const step = T.stepHeight;
-    const r = T.collisionRadius * this.scale;
+    const r = T.collisionRadius * this.collisionScale;
     const canStand = (x: number, z: number) => {
-      // sample front bumper corners + centre
+      // walk 3 lines (centre + both front corners) from the truck to its bumper: each sample may rise at
+      // most one step above the previous one, so slopes are climbable at any truck size but walls block
       const sx = Math.cos(this.heading);
       const sz = -Math.sin(this.heading);
-      const fr = 1.4 * this.scale;
-      const sd = 0.8 * this.scale;
-      const lim = this.y + step;
-      return heightFn(x + fx * fr, z + fz * fr) <= lim && heightFn(x + fx * fr + sx * sd, z + fz * fr + sz * sd) <= lim && heightFn(x + fx * fr - sx * sd, z + fz * fr - sz * sd) <= lim && heightFn(x, z) <= lim;
+      const fr = 1.4 * this.collisionScale;
+      const sd = 0.8 * this.collisionScale;
+      if (heightFn(x, z) > this.y + step) return false;
+      const n = Math.max(2, Math.ceil(fr / 0.9));
+      for (const side of [0, sd, -sd]) {
+        let prev = this.y;
+        for (let i = 1; i <= n; i++) {
+          const d = (fr * i) / n;
+          const h = heightFn(x + fx * d + sx * side, z + fz * d + sz * side);
+          if (h > prev + step) return false;
+          prev = h;
+        }
+      }
+      return true;
     };
     let nx = this.x + fx * this.speed * dt;
     let nz = this.z + fz * this.speed * dt;
@@ -216,7 +250,8 @@ export class Truck {
         const newVy = Math.max(-12, Math.min(12, (g - this.y) / Math.max(dt, 1 / 120)));
         this.vy = this.vy * 0.5 + newVy * 0.5;
         this.y = g;
-      } else if (this.y - g > 0.35 && this.vy > 1.0) {
+      } else if (this.y - g > 0.05 && this.vy > 1.0) {
+        // ground falls away while still climbing (ramp lip or hump crest): launch
         this.airborne = true; // launched off a ramp lip
         this.vy *= 1.9;
         this.airTime = 0;
@@ -283,7 +318,8 @@ export class Truck {
     this.pileMatrix.copy(this.root.matrix).multiply(_m);
 
     // magnet: mounted at the front of the pile, facing forward
-    const ms = (0.95 + magnetGrow) * (1 + Math.max(0, -sq) * 0.6);
+    // magnet stays oversized relative to the truck, and grows a little with the pull radius
+    const ms = this.scale * (0.9 + magnetGrow * 0.3) * (1 + Math.max(0, -sq) * 0.6);
     this.magnet.position.set(this.x, 0, this.z);
     this.magnet.matrixAutoUpdate = false;
     _v.set(0, 0, pileRadius * 0.82);
@@ -304,7 +340,8 @@ export class Truck {
     const rr = radius * (1 + this.ringPulse * 0.06);
     this.ring.position.set(this.x, g + 0.06, this.z);
     this.ring.scale.set(rr, 1, rr);
-    this.ringMat.opacity = (mega ? 0.38 : 0.2) + this.ringPulse * 0.25;
+    // reach ring: faint at rest, brief brighter pulse on each pickup
+    this.ringMat.opacity = (mega ? 0.34 : 0.15) + this.ringPulse * 0.32;
     if (mega) this.ringMat.color.setHSL((time * 0.6) % 1, 0.9, 0.6);
     else this.ringMat.color.setHex(this.ringColor);
     const shr = Math.max(1.9 * this.scale, pileRadius * 1.05);

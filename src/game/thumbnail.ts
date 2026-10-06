@@ -121,7 +121,7 @@ function stage(g: Game, v: ThumbVariant) {
   g.stageRound({ kind: 'level', levelId: v.level });
   const tr = g.truck;
   tr.reset(v.truck.x, v.truck.z, v.truck.heading, g.world.heightAt(v.truck.x, v.truck.z));
-  tr.scale = v.truck.scale;
+  tr.scale = 1;
   const fx = Math.sin(v.truck.heading);
   const fz = Math.cos(v.truck.heading);
   const local = (p: V3): V3 => [tr.x + fx * p[2] + fz * p[0], tr.y + p[1], tr.z + fz * p[2] - fx * p[0]];
@@ -130,6 +130,9 @@ function stage(g: Game, v: ThumbVariant) {
   for (const it of takeResting(g, (i) => i.tier >= 3 && Math.hypot(i.x - tr.x, i.z - tr.z) < 24, 99, tr.x, tr.z)) g.junk.attachNow(it);
   // pile: small stuff first, big pieces last so they poke out of the shell
   for (let tier = 0; tier < 5; tier++) for (const it of takeResting(g, (i) => i.tier === tier, v.pile[tier], tr.x, tr.z)) g.junk.attachNow(it);
+  // size = power: the truck is as big as the junk its staged lift capacity can carry
+  tr.scale = tr.targetScale = g.visualScaleFor(g.capacity) * (v.truck.scale / 1.75);
+  g.junk.setTierStates(g.topTier());
   const pose = () => tr.updateVisual(0.016, g.junk.pileRadius, g.radius(), 0.9, !!v.mega, 1.3, g.world.heightAt);
   for (let i = 0; i < 30; i++) pose(); // settle springs
 
@@ -141,6 +144,12 @@ function stage(g: Game, v: ThumbVariant) {
     const [x, y, z] = local(f.at);
     if (f.paint) g.junk.repaint(it, f.paint);
     g.junk.launchNow(it, x, g.world.heightAt(x, z) + y, z, f.frac, f.spin ?? 0);
+  }
+  // nothing resting right in front of the lens (the camera is pulled back for bigger trucks)
+  {
+    const k0 = Math.pow(tr.scale / v.truck.scale, 0.8);
+    const [qx, , qz] = local([v.camera.at[0] * k0, 0, v.camera.at[2] * k0]);
+    for (const it of takeResting(g, (i) => Math.hypot(i.x - qx, i.z - qz) < 11, 999, qx, qz)) g.junk.attachNow(it);
   }
   g.junk.update(0, tr.x, tr.y, tr.z, g.radius(), 1e9, tr.pileMatrix, false, false);
 
@@ -161,8 +170,10 @@ function stage(g: Game, v: ThumbVariant) {
   const cam = g.rig.camera;
   cam.fov = v.camera.fov;
   cam.aspect = 1;
-  const [cx, cy, cz] = local(v.camera.at);
-  const [lx, ly, lz] = local(v.camera.look);
+  // compositions were framed for a 1.75x truck: pull the camera back as the (size = power) truck grows
+  const k = Math.pow(tr.scale / v.truck.scale, 0.8);
+  const [cx, cy, cz] = local([v.camera.at[0] * k, v.camera.at[1] * k, v.camera.at[2] * k]);
+  const [lx, ly, lz] = local([v.camera.look[0] * k, v.camera.look[1] * k, v.camera.look[2] * k]);
   cam.position.set(cx, cy, cz);
   cam.lookAt(lx, ly, lz);
   cam.updateProjectionMatrix();

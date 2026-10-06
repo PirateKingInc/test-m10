@@ -55,6 +55,8 @@ export interface Item {
   aScale: number; // scale once attached (compaction)
   airborne: boolean; // picked while truck airborne
   landed?: boolean; // DROP: already reported first touchdown
+  bonkAt?: number; // round time of the last bump into it (too heavy)
+  eager?: boolean; // STRAIN used as "liftable, leaning toward the truck"
   assisted?: boolean; // arrived via an assist (sky drop / magnet pulse)
   fast?: boolean; // pulse yank: short teeter + quick flight
   noBounce?: boolean; // assist drops settle on first touchdown (collectible sooner)
@@ -62,6 +64,7 @@ export interface Item {
 
 interface TypeInfo {
   mesh: THREE.InstancedMesh;
+  outline: THREE.InstancedMesh; // liftable outline (inverted hull), shares the instance matrices
   capacity: number;
   used: number;
   free: number[]; // recycled instance slots
@@ -81,6 +84,103 @@ const _v2 = new THREE.Vector3();
 const _s = new THREE.Vector3(1, 1, 1);
 const _axis = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Junk material with a liftability state. One program (shared cache key), three instances:
+ * liftable (bright rim light in the magnet colour + slight lift), too heavy (desaturated + darker),
+ * flash (liftable + a white pulse when a tier unlocks). Only instances with aGround = 1 (lying on
+ * the ground) are affected, so the pile and junk in flight keep their normal colours.
+ * Meaning is carried by brightness and outline, not hue, so it reads for colour-blind players.
+ */
+function makeStateMaterial(v: { uHeavy: number; uGlow: number; uLift: number; uFlash: number }) {
+  const H = CONFIG.highlight;
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  const u = {
+    uHeavy: { value: v.uHeavy },
+    uGlow: { value: v.uGlow },
+    uLift: { value: v.uLift },
+    uFlash: { value: v.uFlash },
+    uDesat: { value: H.heavyDesat },
+    uDark: { value: H.heavyDark },
+    uGlowColor: { value: new THREE.Color(0xff8a8a) },
+  };
+  m.userData.u = u;
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aGround;\nvarying float vGround;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGround = aGround;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nvarying float vGround;\nuniform float uHeavy, uGlow, uLift, uFlash, uDesat, uDark;\nuniform vec3 uGlowColor;',
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        `{
+          float g = vGround;
+          float lum = dot(outgoingLight, vec3(0.299, 0.587, 0.114));
+          vec3 heavy = mix(outgoingLight, vec3(lum), uDesat) * uDark;
+          outgoingLight = mix(outgoingLight, heavy, g * uHeavy);
+          float rim = pow(clamp(1.0 - abs(dot(normal, normalize(vViewPosition))), 0.0, 1.0), 1.5);
+          outgoingLight = outgoingLight * (1.0 + uLift * g) + uGlowColor * (rim * uGlow + uFlash) * g;
+        }
+        #include <opaque_fragment>`,
+      );
+  };
+  m.customProgramCacheKey = () => 'junk-state';
+  return m;
+}
+
+/** shared: outline thickness grows as the camera zooms out, so it stays ~constant on screen */
+const OUTLINE_ZOOM = { value: 1 };
+
+/** outline thickness (object units) per tier: bigger junk is seen from further away */
+const OUTLINE_THICK = [0.045, 0.055, 0.07, 0.09, 0.12];
+
+/**
+ * Outline directions for an inverted-hull outline on flat-shaded geometry: average the face normals of
+ * every vertex sharing a position (smooth normals) so the extruded hull has no gaps. Stored pre-scaled
+ * by the thickness in attribute aOut.
+ */
+function addOutlineNormals(g: THREE.BufferGeometry, thick: number) {
+  if (!g.getAttribute('normal')) g.computeVertexNormals();
+  const pos = g.getAttribute('position');
+  const nor = g.getAttribute('normal');
+  const sums = new Map<string, THREE.Vector3>();
+  const key = (i: number) => `${pos.getX(i).toFixed(3)},${pos.getY(i).toFixed(3)},${pos.getZ(i).toFixed(3)}`;
+  for (let i = 0; i < pos.count; i++) {
+    const k = key(i);
+    const v = sums.get(k) ?? new THREE.Vector3();
+    v.x += nor.getX(i);
+    v.y += nor.getY(i);
+    v.z += nor.getZ(i);
+    sums.set(k, v);
+  }
+  const out = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const v = sums.get(key(i))!.clone().normalize().multiplyScalar(thick);
+    out[i * 3] = v.x;
+    out[i * 3 + 1] = v.y;
+    out[i * 3 + 2] = v.z;
+  }
+  g.setAttribute('aOut', new THREE.BufferAttribute(out, 3));
+}
+
+/** Back-face hull pushed out along aOut: a solid bright outline. Hidden for junk not on the ground. */
+function makeOutlineMaterial() {
+  const m = new THREE.MeshBasicMaterial({ color: 0xffb3b3, side: THREE.BackSide });
+  const u = { uThick: { value: 1 }, uZoom: OUTLINE_ZOOM };
+  m.userData.u = u;
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, u);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aGround;\nattribute vec3 aOut;\nuniform float uThick, uZoom;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed += aOut * uThick * uZoom;\nif (aGround < 0.5) transformed = vec3(0.0);');
+  };
+  m.customProgramCacheKey = () => 'junk-outline';
+  return m;
+}
 
 export interface PickupEvent {
   item: Item;
@@ -116,7 +216,12 @@ export class JunkSystem {
   heightAt: (x: number, z: number) => number = () => 0;
 
   constructor() {
-    this.material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    const H = CONFIG.highlight;
+    this.material = makeStateMaterial({ uHeavy: 0, uGlow: H.glow, uLift: H.lift, uFlash: 0 });
+    this.heavyMat = makeStateMaterial({ uHeavy: 1, uGlow: 0, uLift: 0, uFlash: 0 });
+    this.flashMat = makeStateMaterial({ uHeavy: 0, uGlow: H.glow, uLift: H.lift, uFlash: 0 });
+    this.outlineMat = makeOutlineMaterial();
+    this.outlineFlashMat = makeOutlineMaterial();
     for (const jt of JUNK_TYPES) {
       const g = jt.build();
       const k = CONFIG.tierModelScale[jt.tier] ?? 1;
@@ -125,8 +230,48 @@ export class JunkSystem {
         g.computeBoundingBox();
         g.computeBoundingSphere();
       }
+      addOutlineNormals(g, OUTLINE_THICK[jt.tier] ?? 0.08);
       this.geos.push(g);
+      const bb = g.boundingBox!;
+      this.tierSize[jt.tier] = Math.max(this.tierSize[jt.tier], bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z);
     }
+    for (let t = 1; t < this.tierSize.length; t++) this.tierSize[t] = Math.max(this.tierSize[t], this.tierSize[t - 1] * 1.15);
+  }
+
+  /** longest footprint (x/z) of any item in each tier — what the truck's size is compared to */
+  readonly tierSize = [0, 0, 0, 0, 0];
+  private heavyMat: THREE.MeshLambertMaterial;
+  private flashMat: THREE.MeshLambertMaterial;
+  private flashT = 0;
+  private outlineMat: THREE.MeshBasicMaterial;
+  private outlineFlashMat: THREE.MeshBasicMaterial;
+  private liftTop = -1;
+
+  /** keep outlines a similar on-screen width at any zoom (cameraDistance in world units) */
+  setOutlineZoom(cameraDistance: number) {
+    OUTLINE_ZOOM.value = Math.max(1, cameraDistance / 16);
+  }
+
+  setGlowColor(hex: number) {
+    const c = new THREE.Color(hex).lerp(new THREE.Color(0xffffff), CONFIG.highlight.glowMix);
+    for (const m of [this.material, this.heavyMat, this.flashMat]) (m.userData.u.uGlowColor.value as THREE.Color).copy(c);
+    const oc = new THREE.Color(hex).lerp(new THREE.Color(0xffffff), CONFIG.highlight.outlineMix);
+    for (const m of [this.outlineMat, this.outlineFlashMat]) m.color.copy(oc);
+  }
+
+  /**
+   * Liftability is per tier (all items of a tier weigh the same), so each type mesh just
+   * switches between the shared materials. flashTier = a tier that just unlocked.
+   */
+  setTierStates(top: number, flashTier = -1) {
+    this.liftTop = top;
+    if (flashTier >= 0) this.flashT = CONFIG.highlight.flashTime;
+    this.types.forEach((t, i) => {
+      const tier = JUNK_TYPES[i].tier;
+      t.mesh.material = tier > top ? this.heavyMat : tier === flashTier ? this.flashMat : this.material;
+      t.outline.visible = tier <= top;
+      t.outline.material = tier === flashTier ? this.outlineFlashMat : this.outlineMat;
+    });
   }
 
   /** (Re)build for a level. reserve = extra pooled instances per type (Rush waves). */
@@ -137,6 +282,8 @@ export class JunkSystem {
     JUNK_TYPES.forEach((jt, ti) => {
       const g = this.geos[ti];
       const capacity = Math.max(1, counts[ti] + reserve);
+      // per-instance "lying on the ground" flag: highlight only applies to junk you can still pick up
+      g.setAttribute('aGround', new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1));
       const mesh = new THREE.InstancedMesh(g, this.material, capacity);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -144,10 +291,18 @@ export class JunkSystem {
       mesh.setColorAt(0, new THREE.Color(1, 1, 1));
       const bb = g.boundingBox!;
       const footR = Math.max(bb.max.x - bb.min.x, bb.max.z - bb.min.z) * 0.42;
-      this.types.push({ mesh, capacity, used: 0, free: [], owners: [], radius: g.boundingSphere!.radius, footR, dirty: true });
-      this.group.add(mesh);
+      const outline = new THREE.InstancedMesh(g, this.outlineMat, capacity);
+      outline.instanceMatrix = mesh.instanceMatrix; // same matrices, no extra uploads
+      outline.frustumCulled = false;
+      outline.count = 0;
+      outline.renderOrder = -1;
+      // gameplay radius (pickup reach, pile volume) uses the scale the game was balanced with
+      const balance = ((CONFIG.tierBalanceScale[jt.tier] ?? 1) / (CONFIG.tierModelScale[jt.tier] ?? 1)) * (jt.reachMul ?? 1);
+      this.types.push({ mesh, outline, capacity, used: 0, free: [], owners: [], radius: g.boundingSphere!.radius * balance, footR, dirty: true });
+      this.group.add(outline, mesh);
       void jt;
     });
+    this.liftTop = -1;
     // grid
     this.gridOrigin = -(half + 12);
     this.gridN = Math.ceil(((half + 12) * 2) / this.cell);
@@ -157,7 +312,7 @@ export class JunkSystem {
 
   clear() {
     for (const t of this.types) {
-      this.group.remove(t.mesh);
+      this.group.remove(t.mesh, t.outline);
       t.mesh.dispose();
     }
     this.types = [];
@@ -182,6 +337,7 @@ export class JunkSystem {
     else if (ti.used < ti.capacity) inst = ti.used++;
     else return null;
     ti.mesh.count = Math.max(ti.mesh.count, ti.used);
+    ti.outline.count = ti.mesh.count;
     const jt = JUNK_TYPES[type];
     const tier = CONFIG.tiers[jt.tier];
     const old = ti.owners[inst];
@@ -221,6 +377,7 @@ export class JunkSystem {
     }
     ti.mesh.setColorAt(inst, it.paint);
     if (ti.mesh.instanceColor) ti.mesh.instanceColor.needsUpdate = true;
+    this.setGround(it, 1);
     this.totalValue += it.value;
     if (drop) {
       it.state = JS.DROP;
@@ -288,6 +445,23 @@ export class JunkSystem {
     ti.dirty = true;
   }
 
+  private setGround(it: Item, v: number) {
+    const a = this.types[it.type].mesh.geometry.getAttribute('aGround') as THREE.InstancedBufferAttribute;
+    a.setX(it.inst, v);
+    a.needsUpdate = true;
+  }
+
+  /** Truck drove into something too heavy: big strain wobble. */
+  bonk(it: Item) {
+    if (it.state === JS.IDLE) {
+      it.state = JS.STRAIN;
+      this.active.push(it);
+    }
+    if (it.state !== JS.STRAIN) return;
+    it.eager = false;
+    it.strain = 1.9;
+  }
+
   /** Start the pickup sequence for an IDLE/STRAIN item (magnet range or a pulse). */
   lift(it: Item, airborne = false) {
     const cfg = CONFIG.magnet;
@@ -344,6 +518,17 @@ export class JunkSystem {
    */
   update(dt: number, mx: number, my: number, mz: number, radius: number, capacity: number, pile: THREE.Matrix4, canPull: boolean, airborne: boolean) {
     this.time += dt;
+    if (this.flashT > 0) {
+      this.flashT -= dt;
+      const u = Math.max(0, this.flashT / CONFIG.highlight.flashTime);
+      this.flashMat.userData.u.uFlash.value = Math.sin(u * Math.PI) * 0.9;
+      this.outlineFlashMat.userData.u.uThick.value = 1 + Math.sin(u * Math.PI) * 1.6;
+      this.outlineFlashMat.color.lerp(new THREE.Color(0xffffff), Math.sin(u * Math.PI) * 0.5);
+      if (this.flashT <= 0) {
+        this.outlineFlashMat.color.copy(this.outlineMat.color);
+        this.setTierStates(this.liftTop);
+      }
+    }
     this.mx = mx;
     this.mz = mz;
     const cfg = CONFIG.magnet;
@@ -351,21 +536,25 @@ export class JunkSystem {
 
     // 1) scan neighbourhood
     if (canPull) {
-      this.forEachNear(mx, mz, radius, (it) => {
+      const eagerR = radius * CONFIG.highlight.eagerMult;
+      this.forEachNear(mx, mz, eagerR, (it) => {
         const dx = it.x - mx;
         const dz = it.z - mz;
         const d = Math.sqrt(dx * dx + dz * dz) - it.radius * 0.45;
-        if (d > radius) return;
+        if (d > eagerR) return;
         if (Math.abs(it.y - my) > radius * 0.6 + 2.2) return; // other level (roof / ground)
-        if (it.mass <= capacity) {
+        const liftable = it.mass <= capacity;
+        if (liftable && d <= radius) {
           if (this.flying >= maxFly) return;
           this.lift(it, airborne);
-        } else if (it.mass <= capacity * cfg.strainRatio) {
+        } else if (liftable || (d <= radius && it.mass <= capacity * cfg.strainRatio)) {
+          // liftable just outside reach: lean in eagerly; too heavy inside reach: strain
           if (it.state === JS.IDLE) {
             it.state = JS.STRAIN;
             it.strain = 0;
             this.active.push(it);
           }
+          it.eager = liftable;
           it.strainSeen = true;
         }
       });
@@ -389,9 +578,10 @@ export class JunkSystem {
           }
           const dx = mx - it.x;
           const dz = mz - it.z;
-          const w = Math.sin(this.time * 30 + it.id) * 0.07 + 0.06;
-          // tilt toward magnet: rotate about axis perpendicular to direction
-          this.writeStatic(it, w * it.strain, -dz, dx, Math.abs(Math.sin(this.time * 16 + it.id)) * 0.05 * it.radius * it.strain);
+          // eager (liftable, just out of reach): quick jiggle + lean toward the truck; heavy: slow strain
+          const w = it.eager ? Math.sin(this.time * 38 + it.id) * 0.05 + 0.1 : Math.sin(this.time * 30 + it.id) * 0.07 + 0.06;
+          const hop = it.eager ? 0.03 : 0.05;
+          this.writeStatic(it, w * it.strain, -dz, dx, Math.abs(Math.sin(this.time * 16 + it.id)) * hop * it.radius * Math.min(1, it.strain));
           break;
         }
         case JS.TEETER: {
@@ -494,6 +684,7 @@ export class JunkSystem {
     const cfg = CONFIG.magnet;
     it.state = JS.FLY;
     it.t = 0;
+    this.setGround(it, 0);
     it.start.set(it.x, it.y + lift, it.z);
     // current world rotation as start
     this.types[it.type].mesh.getMatrixAt(it.inst, _m);

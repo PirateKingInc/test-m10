@@ -227,7 +227,7 @@ export class Assist {
 
     const fx = g.truck.forwardX;
     const fz = g.truck.forwardZ;
-    const k = g.truck.scale;
+    const k = g.balanceScale(); // original growth curve: drop distances keep their balance
     let dropped = 0;
     for (const it of chosen) {
       for (let tries = 0; tries < 16; tries++) {

@@ -183,6 +183,19 @@ export class AudioEngine {
     });
   }
 
+  /** bumping into something too heavy: dull metallic clank, lower for heavier tiers (no rising pitch) */
+  private lastClank = 0;
+  clank(tier: number) {
+    if (!this.ok) return;
+    const t = this.ctx!.currentTime;
+    if (t - this.lastClank < 0.2) return;
+    this.lastClank = t;
+    const f = 150 / (1 + tier * 0.25);
+    this.tone('square', f, f * 0.6, t, 0.002, 0.16, 0.14);
+    this.tone('triangle', 410 / (1 + tier * 0.15), 360 / (1 + tier * 0.15), t, 0.002, 0.12, 0.35);
+    this.noiseHit(t, 1100, 7, 0.3, 0.22, 'bandpass');
+  }
+
   thud() {
     if (!this.ok) return;
     const t = this.ctx!.currentTime;

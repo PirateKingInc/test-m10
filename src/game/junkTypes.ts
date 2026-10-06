@@ -8,6 +8,8 @@ export interface JunkType {
   weight: number; // relative spawn frequency inside its tier
   /** instance colours to pick from (multiplied with vertex colours; white body parts take the paint) */
   paints: number[];
+  /** gameplay radius multiplier when a model was resized purely for readability (keeps pickup reach) */
+  reachMul?: number;
   build(): THREE.BufferGeometry;
 }
 
@@ -43,14 +45,15 @@ export const JUNK_TYPES: JunkType[] = [
   {
     id: 'bike',
     tier: 1,
+    reachMul: 1.154, // model shortened for size = power; old bounding radius 0.925 vs 0.802
     weight: 2,
     paints: [0xff006e, 0x3a86ff, 0xffbe0b, 0x06d6a0],
     build: () => {
-      const r = 0.36;
+      const r = 0.3;
       const parts: Part[] = [
-        torus(r, 0.06, DARK, 0, r + 0.02, -0.5, 0, Math.PI / 2, 0),
-        torus(r, 0.06, DARK, 0, r + 0.02, 0.5, 0, Math.PI / 2, 0),
-        box(0.08, 0.08, 1.0, W, 0, 0.62, 0),
+        torus(r, 0.06, DARK, 0, r + 0.02, -0.42, 0, Math.PI / 2, 0),
+        torus(r, 0.06, DARK, 0, r + 0.02, 0.42, 0, Math.PI / 2, 0),
+        box(0.08, 0.08, 0.84, W, 0, 0.62, 0),
         box(0.08, 0.55, 0.08, W, 0, 0.55, -0.25, 0.4, 0, 0),
         box(0.08, 0.6, 0.08, W, 0, 0.6, 0.38, -0.3, 0, 0),
         box(0.12, 0.06, 0.28, DARK, 0, 0.92, -0.32),

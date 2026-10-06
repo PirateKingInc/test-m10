@@ -214,16 +214,29 @@ function garageWithRamp(L: LayoutBuilder, cx: number, cz: number, rampSide: 'n' 
 }
 
 /** Free-standing jump ramp in the street. */
+/**
+ * Street jump hump: gentle up-slope toward `dir`, steeper back-slope behind the crest. Drivable from
+ * both sides (a one-sided ramp was a 1.5-unit wall from behind, which blocks big trucks on 9-wide roads).
+ */
 function jumpRamp(L: LayoutBuilder, cx: number, cz: number, axis: 'x' | 'z', dir: 1 | -1) {
   const len = 5;
+  const back = 2.6;
   const w = 4;
   const h = 1.5;
   const bw = axis === 'z' ? w : len;
   const bd = axis === 'z' ? len : w;
   L.decor.push(wedge(bw, h, bd, 0xff7b00, cx, cz, axis, dir));
-  // stripes
-  L.decor.push(box(axis === 'z' ? w + 0.05 : 0.3, h * 0.5, axis === 'z' ? 0.3 : w + 0.05, 0x111111, cx + (axis === 'x' ? (dir * len) / 2 - dir * 0.2 : 0), h * 0.75, cz + (axis === 'z' ? (dir * len) / 2 - dir * 0.2 : 0)));
   L.solid(cx, cz, bw, bd, h, { ramp: { axis, dir } });
+  // back-slope behind the crest (rises toward the crest from the other side)
+  const off = dir * (len / 2 + back / 2);
+  const bx = cx + (axis === 'x' ? off : 0);
+  const bz = cz + (axis === 'z' ? off : 0);
+  const bbw = axis === 'z' ? w : back;
+  const bbd = axis === 'z' ? back : w;
+  L.decor.push(wedge(bbw, h, bbd, 0xe85d04, bx, bz, axis, -dir as 1 | -1));
+  L.solid(bx, bz, bbw, bbd, h, { ramp: { axis, dir: -dir as 1 | -1 } });
+  // stripes on the crest
+  L.decor.push(box(axis === 'z' ? w + 0.05 : 0.3, 0.12, axis === 'z' ? 0.3 : w + 0.05, 0x111111, cx + (axis === 'x' ? (dir * len) / 2 : 0), h + 0.02, cz + (axis === 'z' ? (dir * len) / 2 : 0)));
 }
 
 /* ------------------------------------------------------------------ */

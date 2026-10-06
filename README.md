@@ -132,6 +132,7 @@ src/ui/ui.ts           HUD, end screen hub, Garage, Modes
 src/ui/debug.ts        ?debug=1 overlay
 src/game/assist.ts     adaptive anti-dead-time assists: sky drop, magnet pulse, off-screen arrow
 src/game/bot.ts        ?bot=1 autopilot with novice / average / skilled profiles (measurement only)
+                       size = power + liftable outline / too-heavy tint: Game.visualScaleFor, junk.ts (makeStateMaterial, makeOutlineMaterial)
 src/game/thumbnail.ts  promo thumbnail staging + rendering (loaded only with ?thumb=1)
 scripts/thumbnails.mjs npm run thumbnails: Vite + headless Chromium -> thumbnails/*.png
 ```
@@ -182,6 +183,7 @@ Production has no sink until you add one with
 | `upgrade_purchase` | id, level, cost, via (`coins`/`rewarded`) |
 | `skin_purchase` | id, cost |
 | `session_length` | seconds, rounds, reason (`hidden`/`pagehide`) |
+| `round_end` readability fields | `bonks`, `bonkRate` (bumps into too-heavy junk per minute), `firstPickupT`, `tierUnlockT` (seconds of play when each tier unlocked), `steerLiftPct` (% of steering time aimed at liftable junk). Also shown live in `?debug=1`. |
 
 ## Testing done
 I drove the game in headless Chromium (Playwright, software WebGL) at every stage:
@@ -486,7 +488,7 @@ than ~3.5s.
 | 1. Fun within 10s, no title wall, no tutorial text | ✅ | The page loads straight into Junkyard. An autopilot "attract" drives the truck into a can cluster (first CLUNK ~1s after load). The animated hand plus "Drag to steer" hides after the first pickup and returns if there is still no input 2.5s later. *Shortfall:* a ~0.3–1.5s loader bar shows during JS parse. *Fix:* inline a tiny CSS truck animation into the loader so even that moment is on-brand. |
 | 2. One input, no buttons in gameplay | ✅ | Drag/hold (floating joystick) or WASD/arrows. The HUD has no buttons, and the mute toggle lives on the end/modes screens. *Shortfall:* there is no manual pause; it pauses automatically when the tab is hidden, which Poki allows. |
 | 3. Constant reward drip, "just too big" always nearby | ✅ | Dense opening lane. Clusters always mix in the next tier up, food is scattered around big items, and a uniform scatter fills the remaining area. Too-heavy items within 3× capacity wobble. Sky drops are ~45% "one tier too heavy" goals. **Adaptive** assists (pulse, sky drop, arrow, early end) keep the longest drought at ~3s for every bot skill: **0 of 82 Suburb rounds over 3.5s**, and at most 1 in 64 Junkyard rounds at 3.7s (see *Difficulty retune*). *Caveat:* these are bot measurements; confirm with Player Fit Test data (`round_end.deadTime`). |
-| 4. Visible growth, no number needed | ✅ | The pile grows physically, the magnet and truck scale up, and the camera zooms out. Tier unlocks get a callout. The level HUD shows only the timer and a star bar. *Shortfall:* at very large sizes the pile can partially bury the magnet. *Fix:* mount the magnet on a boom that extends with pile radius. |
+| 4. Visible growth, no number needed | ✅ | **Size = power:** the truck grows from 1.6 to 10.5 units with its lift capacity, always bigger than what it can lift and about the size of the next tier, with a pop when a tier unlocks. Liftable junk is outlined in the magnet's color; too-heavy junk is darker and gray. The pile grows, the camera zooms out, and the HUD shows the next tier's silhouette filling up. *Shortfall:* at very large sizes the pile can partially bury the magnet. *Fix:* mount the magnet on a boom that extends with pile radius. |
 | 5. Satisfying physics and juice | ✅ | Teeter/hop/tumble before snapping on, squash & stretch on truck and items, hit-stop on large/huge pickups, screen shake scaled by tier, particles, rising clunk pitch for chained pickups, chimes, and a **combo multiplier** (x2 at a 15-chain, x3 at 40) with its own HUD pill and arpeggio sting. *Shortfall:* pickups are scripted rather than simulated, so nothing falls off the pile. *Fix:* when the pile grows, occasionally shed a few small items that bounce off. |
 | 6. Short rounds, instant retry, end screen < 1s | ✅ | "TIME!" slam, then the end screen at 0.6s with stars, % cleaned, score, best (with NEW BEST), coins, and "next goal" lines (next star threshold and the coins still needed for the cheapest upgrade). One tap on PLAY AGAIN starts the next round. |
 | 7. Light meta, ~1 upgrade per round | ✅ | Tiers cost 90–420 coins. An average player earns ~165–200 coins per round (less in Suburb), skilled players more through combo multipliers, and assisted pickups pay ¼. Magnet Power (+30% pull, +35% lift per tier) is what opens 3★, so every purchase is felt. Measured: average reaches Junkyard 3★ with ~3–4 tiers and Suburb with ~4 (*Difficulty retune*). The "Free" rewarded offer per tier speeds this up for players who watch ads. |
@@ -495,8 +497,11 @@ than ~3.5s.
 | Build < 5MB, playable < 3s | ✅ | ~580KB total. ~1.5s to playable under throttled conditions. |
 
 ## Next 5 changes most likely to raise average playtime and rewarded opt-in (ranked)
-*(Shipped since the last list: late-round dead time, and star/economy calibration against bots. See above.)*
-1. **Re-fit stars and costs on real Player Fit Test data** (playtime). The bots separate novice from average less than real players will. Use `round_end` (pct, stars, `deadTime`, coins) to set the 2★ and 3★ lines so the median first-session player gets 2★ on Junkyard and 3★ needs 2–3 upgrades. It's a config-only change.
+*(Shipped since the last list: late-round dead time, star/economy calibration against bots, and the playtest-1 readability fix. See above.)*
+1. **Re-fit stars and costs on real Player Fit Test data, and check readability** (playtime). The bots separate novice from average less than real players will.
+   - **Stars and costs:** use `round_end` (pct, stars, `deadTime`, coins) to set the 2★ and 3★ lines so the median first-session player gets 2★ on Junkyard and 3★ needs 2–3 upgrades.
+   - **Readability:** watch `bonkRate` and `steerLiftPct` to confirm players now read the size rule. If bonks stay high in the first minute, thicken the outline (`OUTLINE_THICK`) or darken heavy junk further (`highlight.heavyDark`).
+   - All config-only.
 2. **First Mega Magnet free, then a pre-round "Mega Magnet" card** (rewarded opt-in). Mega Magnet (2× pull plus lift) now directly unlocks containers, which 3★ needs. That makes it the most valuable ad in the game, and the first free use teaches exactly that.
 3. **"Combo master" goals** (playtime for skilled players). Add per-level combo targets on the end screen (e.g. "reach a 40-chain for x3") and a small coin bonus for a new best combo. Skilled players currently hit 3★ in 1–3 rounds; this gives them a reason to keep replaying.
 4. **More skins with ad-progress unlocks** ("watch 3 ads → Golden Truck", with progress pips) (opt-in + retention). Skins are a config array.

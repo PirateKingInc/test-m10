@@ -11,6 +11,15 @@ import type { Game, ModeSpec, Results } from '../game/game';
 import { dailySetup, LEVELS } from '../game/levels';
 import { hashString } from '../core/rng';
 
+/** item silhouettes per tier for the HUD goal + "too heavy" pop (no text needed) */
+const TIER_ICON: string[] = [
+  '<svg viewBox="0 0 32 32"><rect x="11" y="6" width="10" height="20" rx="3"/></svg>',
+  '<svg viewBox="0 0 32 32"><circle cx="8" cy="21" r="6" fill="none" stroke-width="3.5"/><circle cx="24" cy="21" r="6" fill="none" stroke-width="3.5"/><path d="M8 21 L14 10 L22 10 L24 21 M14 10 L18 21 L8 21" fill="none" stroke-width="3"/></svg>',
+  '<svg viewBox="0 0 32 32"><rect x="9" y="2" width="14" height="28" rx="2"/><rect x="9" y="12" width="14" height="2.5" class="cut"/><rect x="19" y="5" width="2" height="5" class="cut"/></svg>',
+  '<svg viewBox="0 0 32 32"><path d="M2 21 L4 14 L10 13 L13 8 L22 8 L26 13 L30 15 L30 21 Z"/><circle cx="9" cy="23" r="4"/><circle cx="24" cy="23" r="4"/></svg>',
+  '<svg viewBox="0 0 32 32"><rect x="1" y="9" width="30" height="15" rx="1"/><path d="M6 11v11M11 11v11M16 11v11M21 11v11M26 11v11" class="cut" fill="none" stroke-width="1.6"/></svg>',
+];
+
 const $ = <T extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 
 type Screen = 'end' | 'garage' | 'modes';
@@ -44,6 +53,13 @@ export class UI {
   private last = { time: '', pct: -1, score: -1, mega: '-', goal: '-', urgent: false };
   private comboTimer = 0;
   private multEl: HTMLElement;
+  private ngEl: HTMLElement;
+  private ngIco: HTMLElement;
+  private ngFill: HTMLElement;
+  private ngTier = -2;
+  private ngP = -1;
+  private heavyPool: HTMLElement[] = [];
+  private heavyNext = 0;
   private lastMult = '-';
   private arrow: HTMLElement;
   private arrowOn = false;
@@ -61,6 +77,7 @@ export class UI {
           <div class="rush" id="rush"></div>
           <div class="goal" id="goal"></div>
           <div class="mult" id="mult"></div>
+          <div class="next-goal" id="nextgoal"><span class="ng-ico" id="ngico"></span><span class="ng-bar"><i id="ngfill"></i></span></div>
         </div>
         <div class="mega" id="mega"></div>
       </div>
@@ -77,6 +94,9 @@ export class UI {
     this.rushEl = $('#rush');
     this.goalEl = $('#goal');
     this.multEl = $('#mult');
+    this.ngEl = $('#nextgoal');
+    this.ngIco = $('#ngico');
+    this.ngFill = $('#ngfill');
     this.megaEl = $('#mega');
     this.hint = $('#hint');
     this.toasts = $('#toasts');
@@ -122,6 +142,8 @@ export class UI {
     }
     this.last = { time: '', pct: -1, score: -1, mega: '-', goal: '-', urgent: false };
     this.timeupEl.classList.remove('on');
+    this.ngTier = -2;
+    this.ngP = -1;
   }
 
   updateHud(g: Game) {
@@ -168,6 +190,26 @@ export class UI {
       this.arrow.classList.toggle('hidden', !a);
     }
     if (a) this.arrow.style.transform = `translate(${a.x}px, ${a.y}px) translate(-50%, -50%) rotate(${a.angle}rad)`;
+    // next goal: silhouette of the next tier + how close you are to lifting it
+    const ng = g.nextGoal();
+    const gt = ng ? ng.tier : -1;
+    if (gt !== this.ngTier) {
+      this.ngTier = gt;
+      this.ngEl.style.display = ng ? '' : 'none';
+      if (ng) {
+        this.ngIco.innerHTML = TIER_ICON[ng.tier];
+        this.ngEl.classList.remove('unlocked');
+        void this.ngEl.offsetWidth;
+        this.ngEl.classList.add('unlocked');
+      }
+    }
+    if (ng) {
+      const p = Math.round(ng.p * 100);
+      if (p !== this.ngP) {
+        this.ngP = p;
+        this.ngFill.style.width = `${p}%`;
+      }
+    }
     // combo chain + multiplier, always visible while a chain is running
     const mt = g.combo >= 2 ? `${g.combo} CHAIN${g.comboMult > 1 ? ` · x${g.comboMult}` : ''}` : '';
     if (mt !== this.lastMult) {
@@ -205,6 +247,29 @@ export class UI {
     this.comboEl.style.setProperty('--hue', String((n * 23) % 360));
     clearTimeout(this.comboTimer);
     this.comboTimer = window.setTimeout(() => this.comboEl.classList.remove('pop'), 700);
+  }
+
+  /** Bumped into something too heavy: short pop at the item with a bar = how close you are to lifting it. */
+  tooHeavy(x: number, y: number, progress: number, tier: number) {
+    if (this.heavyPool.length < 3) {
+      const el = document.createElement('div');
+      el.className = 'heavy-pop';
+      el.innerHTML = '<span class="hp-ico"></span><b>TOO HEAVY</b><span class="hp-bar"><i></i></span>';
+      this.root.appendChild(el);
+      this.heavyPool.push(el);
+    }
+    const el = this.heavyPool[this.heavyNext++ % this.heavyPool.length];
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const cx = Math.max(80, Math.min(w - 80, x));
+    const cy = Math.max(this.insetTop + 60, Math.min(h - this.insetBottom - 60, y));
+    el.style.left = `${cx}px`;
+    el.style.top = `${cy}px`;
+    (el.querySelector('.hp-ico') as HTMLElement).innerHTML = TIER_ICON[tier] ?? '';
+    (el.querySelector('.hp-bar i') as HTMLElement).style.width = `${Math.round(progress * 100)}%`;
+    el.classList.remove('on');
+    void el.offsetWidth;
+    el.classList.add('on');
   }
 
   /** multiplier tier-up: big centre pop */

@@ -138,6 +138,12 @@ export class Game implements FeatureHost {
   private hitStop = 0;
   private trySkin: string | null = null;
   private liftTier = 0;
+  /** next tier to unlock and progress toward it (capacity / its weight); null at the top tier */
+  nextGoal(): { tier: number; p: number } | null {
+    const next = this.liftTier + 1;
+    if (next >= CONFIG.tiers.length) return null;
+    return { tier: next, p: Math.min(1, this.capacity / CONFIG.tiers[next].mass) };
+  }
   private lastTick = 0;
   tierLifted = [0, 0, 0, 0, 0];
 
@@ -233,18 +239,54 @@ export class Game implements FeatureHost {
     return r;
   }
   speed() {
-    return CONFIG.truck.baseSpeed * (1 + this.save.upgrades.speed * CONFIG.upgrades.speed.perLevel) * (1 + (this.truck.scale - 1) * 0.35);
+    return CONFIG.truck.baseSpeed * (1 + this.save.upgrades.speed * CONFIG.upgrades.speed.perLevel) * (1 + (this.balanceScale() - 1) * 0.35);
   }
-  private truckScale() {
+  /**
+   * The ORIGINAL growth curve. Gameplay that was balanced on it (truck speed, sky-drop distance)
+   * keeps using it, so the visual size change below doesn't move any balance numbers.
+   */
+  balanceScale() {
     const T = CONFIG.truck;
     const c = this.baseCapacity();
     return Math.min(T.maxScale, 1 + T.scalePerCapacityLog * Math.log2(c / CONFIG.magnet.baseCapacity));
+  }
+  /** highest tier the magnet can lift at this capacity */
+  topTier(cap = this.capacity) {
+    let top = 0;
+    CONFIG.tiers.forEach((t, i) => {
+      if (t.mass <= cap) top = i;
+    });
+    return top;
+  }
+  /**
+   * Size = power: truck visual scale for a lift capacity. Just after tier T unlocks the truck is
+   * overTier x the longest T item; it grows (log-capacity) toward underNext x the next tier's
+   * length and pops past it on unlock. Liftable junk is always smaller; the next tier is ~same size or bigger.
+   */
+  visualScaleFor(cap: number) {
+    const S = CONFIG.sizing;
+    const sizes = this.junk.tierSize;
+    const T = CONFIG.tiers;
+    const top = this.topTier(cap);
+    const lo = sizes[top] * S.overTier;
+    let len: number;
+    if (top < T.length - 1) {
+      const hi = Math.max(lo * 1.06, sizes[top + 1] * S.underNext);
+      const f = Math.max(0, Math.min(1, Math.log(cap / T[top].mass) / Math.log(T[top + 1].mass / T[top].mass)));
+      len = lo + (hi - lo) * f;
+    } else {
+      const f = Math.max(0, Math.min(1, Math.log(cap / T[top].mass) / Math.log(4)));
+      len = lo * (1 + S.hugeGrowth * f);
+    }
+    return Math.max(S.minScale, Math.min(S.maxScale, len / this.truck.length));
   }
   private viewRadius() {
     const c = CONFIG.camera;
     const m = CONFIG.magnet;
     const r = Math.min(m.maxRadius, this.baseRadius() + m.radiusPerSqrtMass * Math.sqrt(this.junk.collectedMass));
-    return c.baseView + (r - m.baseRadius) * c.viewPerRadius + this.junk.pileRadius * c.viewPerPile * 0.6 + (this.megaLeft > 0 ? 3 : 0);
+    const truckLen = this.truck.length * this.truck.targetScale;
+    const close = Math.max(c.closeMin, Math.min(1, c.closeBase + c.closePerTruck * truckLen));
+    return (c.baseView + (r - m.baseRadius) * c.viewPerRadius + this.junk.pileRadius * c.viewPerPile + (this.megaLeft > 0 ? 3 : 0)) * close;
   }
   pct() {
     return this.junk.totalValue ? this.junk.collectedValue / this.junk.totalValue : 0;
@@ -340,6 +382,7 @@ export class Game implements FeatureHost {
     this.trySkin = opts.trySkin ?? null;
     const skin = CONFIG.skins.find((s) => s.id === (this.trySkin ?? this.save.skin)) ?? CONFIG.skins[0];
     this.truck.setSkin(skin);
+    this.junk.setGlowColor(skin.magnet);
     this.truck.reset(layout.start.x, layout.start.z, layout.start.heading, this.world.heightAt(layout.start.x, layout.start.z));
     this.particles.clear();
     this.features = createFeatures(this.level.features);
@@ -366,8 +409,17 @@ export class Game implements FeatureHost {
     this.assist.reset();
     this.megaLeft = opts.mega ? CONFIG.rewarded.megaMagnetDuration : 0;
     this.hitStop = 0;
-    this.liftTier = 0;
+    this.liftTier = this.topTier();
+    this.junk.setTierStates(this.liftTier);
+    this.truck.targetScale = this.truck.scale = this.visualScaleFor(this.capacity);
     this.tierLifted = [0, 0, 0, 0, 0];
+    this.bonks = 0;
+    this.bonkT = 0;
+    this.firstPickupT = -1;
+    this.tierUnlockT = {};
+    this.steerLiftT = 0;
+    this.steerHeavyT = 0;
+    this.steerSampleT = 0;
     this.extraTimeUsed = false;
     this.continueUsed = false;
     this.tripleUsed = false;
@@ -452,8 +504,15 @@ export class Game implements FeatureHost {
         }
         target = this.speed();
       }
-      this.truck.scale += (this.truckScale() - this.truck.scale) * Math.min(1, dt * 3);
       const cap = this.capacity;
+      this.checkTier(cap);
+      this.truck.targetScale = this.visualScaleFor(cap);
+      this.truck.stepScale(dt);
+      this.truck.collisionScale = Math.min(this.truck.scale, this.balanceScale() * CONFIG.sizing.collisionCap);
+      if (s === 'playing' && dt > 0) {
+        this.checkBonks(dt, cap);
+        this.sampleSteering(dt, hasInput, wantX, wantZ, cap);
+      }
       const impact = this.truck.drive(dt, wantX, wantZ, hasInput, target, this.world.heightAt, this.world.half, (x, z, r) => this.pushOut(x, z, r, cap));
       if (this.truck.airborne && !this.wasAirborne && this.truck.vy > 3) audio.jump();
       this.wasAirborne = this.truck.airborne;
@@ -506,6 +565,7 @@ export class Game implements FeatureHost {
       this.truck.updateVisual(dt, this.junk.pileRadius, radius, growth, this.megaLeft > 0, this.roundTime, this.world.heightAt);
       this.particles.update(dt);
     }
+    this.junk.setOutlineZoom(this.rig.distance);
     this.rig.update(realDt, this.truck.x, this.truck.y, this.truck.z, this.truck.forwardX * this.truck.speed, this.truck.forwardZ * this.truck.speed, this.viewRadius());
     this.ui?.updateHud(this);
   }
@@ -533,6 +593,109 @@ export class Game implements FeatureHost {
     this.particles.ring(it.x, it.baseY, it.z, 8, 0xf1e3c8, it.radius * 1.4);
     const d = Math.hypot(it.x - this.truck.x, it.z - this.truck.z);
     if (d < 25) this.rig.shake(0.04 + it.tier * 0.03);
+  }
+
+  /* ---------------- readability: tiers, bonks, steering ---------------- */
+  bonks = 0;
+  private bonkT = 0;
+  firstPickupT = -1;
+  tierUnlockT: Record<number, number> = {};
+  private steerLiftT = 0;
+  private steerHeavyT = 0;
+  private steerSampleT = 0;
+
+  /** Tier crossings from ANY source (pickups, pulses, Mega Magnet on/off). Unlocks get the power-up moment. */
+  private checkTier(cap: number) {
+    const top = this.topTier(cap);
+    if (top === this.liftTier) return;
+    const up = top > this.liftTier;
+    this.liftTier = top;
+    this.junk.setTierStates(top, up ? top : -1);
+    if (!up) return;
+    if (this.state === 'playing' && this.tierUnlockT[top] === undefined) this.tierUnlockT[top] = Math.round(this.roundTime * 10) / 10;
+    this.toast(`NOW LIFTING ${TIER_NAMES[top]}!`);
+    audio.powerUp();
+    this.truck.pop();
+    this.rig.shake(0.15);
+    this.truck.magnetWorld(_v);
+    this.particles.burst(_v.x, _v.y, _v.z, 30, [0xffe066, 0xff3cac, 0x4cc9f0], 9, 0.25);
+    this.particles.ring(this.truck.x, this.truck.y, this.truck.z, 20, 0xffffff, this.truck.length * this.truck.scale * 0.6);
+  }
+
+  /** Driving into junk that is too heavy: wobble + clank + "TOO HEAVY" pop with progress. */
+  private checkBonks(dt: number, cap: number) {
+    const H = CONFIG.highlight;
+    this.bonkT -= dt;
+    const r = CONFIG.truck.collisionRadius * this.truck.collisionScale;
+    const now = this.roundTime;
+    this.junk.forEachNear(this.truck.x, this.truck.z, r + 5, (it) => {
+      if (it.mass <= cap || Math.abs(it.baseY - this.truck.y) > 1) return;
+      if (Math.hypot(it.x - this.truck.x, it.z - this.truck.z) > r + it.footR * 0.85) return;
+      if (now - (it.bonkAt ?? -99) < H.bonkCooldown) return;
+      it.bonkAt = now;
+      this.junk.bonk(it);
+      this.bonks++;
+      if (this.bonkT > 0) return;
+      this.bonkT = H.bonkGap;
+      audio.clank(it.tier);
+      this.rig.shake(0.08 + it.tier * 0.03);
+      this.truck.bump(0.1);
+      _v.set(it.x, it.y + it.radius * 1.2, it.z).project(this.rig.camera);
+      this.ui?.tooHeavy((_v.x * 0.5 + 0.5) * window.innerWidth, (-_v.y * 0.5 + 0.5) * window.innerHeight, Math.min(1, cap / it.mass), it.tier);
+    });
+  }
+
+  /** Is the player steering toward something liftable? (nearest resting junk in a 25° cone, 30 units) */
+  private sampleSteering(dt: number, hasInput: boolean, wx: number, wz: number, cap: number) {
+    this.steerSampleT -= dt;
+    if (this.steerSampleT > 0) return;
+    const step = 0.1;
+    this.steerSampleT = step;
+    const l = Math.hypot(wx, wz);
+    if (!hasInput || l < 1e-3) return;
+    const dx = wx / l;
+    const dz = wz / l;
+    let best: Item | null = null;
+    let bd = 30;
+    const cos = Math.cos((25 * Math.PI) / 180);
+    this.junk.forEachNear(this.truck.x, this.truck.z, 30, (it) => {
+      const ox = it.x - this.truck.x;
+      const oz = it.z - this.truck.z;
+      const d = Math.hypot(ox, oz);
+      if (d < 0.5 || d >= bd || (ox * dx + oz * dz) / d < cos) return;
+      bd = d;
+      best = it;
+    });
+    if (!best) return;
+    if ((best as Item).mass <= cap) this.steerLiftT += step;
+    else this.steerHeavyT += step;
+  }
+
+  /** debug/screenshot helper: pretend `mass` was collected and park the truck at (x, z). */
+  debugPose(x: number, z: number, heading: number, mass: number) {
+    this.junk.collectedMass = mass;
+    this.truck.x = x;
+    this.truck.z = z;
+    this.truck.heading = heading;
+    this.truck.speed = 0;
+    this.truck.y = this.world.heightAt(x, z);
+    this.checkTier(this.capacity);
+    this.truck.targetScale = this.truck.scale = this.visualScaleFor(this.capacity);
+    this.truck.updateVisual(0, this.junk.pileRadius, this.radius(), 0.3, false, 0, this.world.heightAt);
+    this.rig.snap(x, this.truck.y, z, this.viewRadius());
+  }
+
+  /** readability metrics for the overlay / round_end */
+  readabilityStats() {
+    const mins = Math.max(this.roundTime, 1) / 60;
+    const steer = this.steerLiftT + this.steerHeavyT;
+    return {
+      bonks: this.bonks,
+      bonkRate: Math.round((this.bonks / mins) * 10) / 10,
+      firstPickupT: this.firstPickupT < 0 ? null : Math.round(this.firstPickupT * 10) / 10,
+      tierUnlockT: { ...this.tierUnlockT },
+      steerLiftPct: steer ? Math.round((this.steerLiftT / steer) * 1000) / 10 : null,
+    };
   }
 
   /** Push the truck out of junk that is too heavy to lift. */
@@ -615,18 +778,7 @@ export class Game implements FeatureHost {
       this.timeLeft = Math.min(CONFIG.rush.maxTime, this.timeLeft + add);
       this.ui.timeBonus();
     }
-    // tier unlock feedback = visible growth moment
-    let top = 0;
-    CONFIG.tiers.forEach((t, i) => {
-      if (t.mass <= this.capacity) top = i;
-    });
-    if (top > this.liftTier) {
-      this.liftTier = top;
-      this.toast(`NOW LIFTING ${TIER_NAMES[top]}!`);
-      audio.powerUp();
-      this.truck.magnetWorld(_v);
-      this.particles.burst(_v.x, _v.y, _v.z, 30, [0xffe066, 0xff3cac, 0x4cc9f0], 9, 0.25);
-    }
+    if (this.firstPickupT < 0 && this.state === 'playing') this.firstPickupT = this.roundTime;
     for (const f of this.features) f.onAttach?.(this, it);
   }
 
@@ -761,6 +913,7 @@ export class Game implements FeatureHost {
       earlyEnd: this.earlyEnd,
       secondsLost: Math.round(this.secondsLost * 10) / 10,
       droughts: this.assist.droughts.slice(0, 5),
+      ...this.readabilityStats(),
     };
     analytics.track('round_end', {
       mode: mode.kind,
@@ -774,6 +927,7 @@ export class Game implements FeatureHost {
       lifted: this.junk.attachedCount,
       continued: this.extraTimeUsed || this.continueUsed,
       deadTime: this.lastDeadTime,
+      ...this.readabilityStats(),
       clearedEarly: this.clearedEarly,
       assist: { ...this.assist.stats, arrowSec: Math.round(this.assist.stats.arrowSec * 10) / 10 },
     });
@@ -955,6 +1109,11 @@ export class Game implements FeatureHost {
       mult: 'x' + this.comboMult,
       assistDly: `drop ${this.assist.dropDelay.toFixed(1)} pulse ${this.assist.pulseDelay.toFixed(1)}`,
       assisted: `${this.assistedPickups}/${this.pickups}`,
+      size: `x${this.truck.scale.toFixed(2)} (${(this.truck.length * this.truck.scale).toFixed(1)}u) tier ${this.liftTier}`,
+      bonks: `${this.readabilityStats().bonks} (${this.readabilityStats().bonkRate}/min)`,
+      '1stPick': this.firstPickupT < 0 ? '-' : this.firstPickupT.toFixed(1) + 's',
+      unlocks: Object.entries(this.tierUnlockT).map(([t, v]) => `T${t}@${v}s`).join(' ') || '-',
+      steerLift: (this.readabilityStats().steerLiftPct ?? '-') + '%',
       coins: this.save.coins,
       calls: this.world.renderer.info.render.calls,
       tris: this.world.renderer.info.render.triangles,

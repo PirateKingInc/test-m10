@@ -62,8 +62,42 @@ export const CONFIG = {
     { id: 'huge', mass: 260, value: 50, size: 7.5, blocks: true },
   ] as TierDef[],
 
+  /**
+   * Size = power (Hole.io rule: if it's smaller than you, you can take it). The truck's visual
+   * length tracks lift capacity from every source (growth, Magnet Power, Mega Magnet):
+   * just after a tier unlocks the truck is `overTier` x that tier's item length; it then grows
+   * toward `underNext` x the next tier's length, and pops past it when that tier unlocks.
+   * Purely visual + collision: speed and assist distances keep their original (balance) scale.
+   */
+  sizing: {
+    overTier: 1.3,
+    underNext: 0.95,
+    hugeGrowth: 0.3, // past the top tier: up to +30% more as capacity reaches 4x the top-tier mass
+    minScale: 0.35,
+    maxScale: 3.0, // ~10 units long: still fits every Suburb road (9 wide) — see README
+    collisionCap: 1.25, // collision size = min(visual size, this x the original growth curve), so yards stay reachable
+    spring: 60, // scale spring; the overshoot on a tier unlock is the "power up" pop
+    damping: 8,
+  },
+
+  /** Liftable vs too-heavy readability (one shared shader, 3 material states, per-instance ground flag) */
+  highlight: {
+    outlineMix: 0.25, // liftable outline = magnet colour mixed toward white (bright = readable without hue)
+    glowMix: 0.5, // inner rim tint colour (same idea)
+    glow: 0.35, // subtle inner rim light on liftable junk (the outline does the heavy lifting)
+    lift: 0, // brightness lift on liftable junk (0 = keep the junk's own colours)
+    heavyDesat: 0.8, // too heavy: desaturate...
+    heavyDark: 0.6, // ...and darken
+    flashTime: 0.9, // newly unlocked tier flashes this long
+    eagerMult: 1.45, // liftable junk within pull radius x this leans toward the truck
+    bonkCooldown: 1.5, // per item: seconds before the same item can "bonk" again
+    bonkGap: 0.4, // global minimum seconds between bonk pops / clanks
+  },
+
   /** visual scale per tier (tiny stuff must read on a phone) */
-  tierModelScale: [1.4, 1.15, 1, 1, 1],
+  tierModelScale: [1.4, 1.15, 1.25, 1, 1], // medium x1.25 so every tier is visibly bigger than the last (size = power)
+  /** scales the pickup math was balanced with: reach / pile volume use these, so the visual bump above changes nothing */
+  tierBalanceScale: [1.4, 1.15, 1, 1, 1],
   /** pile compaction: big pieces shrink as they join the pile so it stays readable */
   attachScaleByTier: [1, 1, 0.85, 0.62, 0.48],
 
@@ -91,9 +125,14 @@ export const CONFIG = {
   camera: {
     fov: 42,
     pitchDeg: 56,
-    baseView: 11, // world radius kept visible at start
-    viewPerRadius: 1.55, // + per unit of magnet radius
-    viewPerPile: 1.2,
+    // world radius kept visible = (baseView + (pull radius - base) * viewPerRadius + pile * viewPerPile) * closeUp
+    baseView: 11,
+    viewPerRadius: 1.55,
+    viewPerPile: 0.72,
+    // closeUp = clamp(closeBase + closePerTruck * truck length, closeMin, 1): tighter framing while the truck is tiny
+    closeBase: 0.62,
+    closePerTruck: 0.115,
+    closeMin: 0.75,
     minPortraitWidth: 0.62, // half-width kept visible = view * k (matters in portrait)
     follow: 7, // position follow stiffness
     zoomLerp: 1.6,
