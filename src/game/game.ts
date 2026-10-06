@@ -4,7 +4,6 @@
  */
 import * as THREE from 'three';
 import { CONFIG, UPGRADE_IDS, UpgradeId } from '../config';
-import { analytics } from '../core/analytics';
 import { audio } from '../core/audio';
 import { Input } from '../core/input';
 import { Rng, hashString, todayKey } from '../core/rng';
@@ -161,7 +160,7 @@ export class Game implements FeatureHost {
   /** ?bot=1&skill=novice|average|skilled — autopilot for tuning / automated tests */
   bot = new URLSearchParams(location.search).get('bot') === '1';
   private brain = new Bot((new URLSearchParams(location.search).get('skill') as BotSkill) || 'average');
-  /** per-round numbers for the measurement harness and analytics */
+  /** per-round numbers for the bot measurement harness and the ?debug=1 overlay (stays local, never sent) */
   lastRoundStats: Record<string, unknown> | null = null;
   pickups = 0;
   assistedPickups = 0;
@@ -310,7 +309,6 @@ export class Game implements FeatureHost {
     this.firstInput = true;
     this.state = 'playing';
     this.timerRunning = true;
-    analytics.track('first_input', { t: analytics.now() });
     ads.gameplayStart();
     audio.startMusic();
     audio.setMusicIntensity(1);
@@ -353,7 +351,6 @@ export class Game implements FeatureHost {
   }
 
   private buildRound(mode: ModeSpec, opts: RoundOpts) {
-    const t0 = performance.now();
     this.mode = mode;
     this.dailyGoal = null;
     let layout: Layout;
@@ -430,7 +427,6 @@ export class Game implements FeatureHost {
     this.truck.updateVisual(0, this.junk.pileRadius, this.radius(), 0, this.megaLeft > 0, 0, this.world.heightAt);
     this.rig.snap(this.truck.x, this.truck.y, this.truck.z, this.viewRadius());
     this.ui?.roundStarted();
-    analytics.track('round_start', { mode: mode.kind, level: this.level.id, buildMs: Math.round(performance.now() - t0), mega: !!opts.mega, trySkin: opts.trySkin ?? null });
   }
 
   /* ------------------------------------------------------------ */
@@ -726,7 +722,6 @@ export class Game implements FeatureHost {
       this.firstPickup = true;
       this.hintTimer = 0;
       this.ui.showHint(false);
-      analytics.track('first_pickup', { t: analytics.now(), afterInput: this.firstInput });
     }
     const E = CONFIG.economy;
     const assisted = !!it.assisted;
@@ -915,22 +910,6 @@ export class Game implements FeatureHost {
       droughts: this.assist.droughts.slice(0, 5),
       ...this.readabilityStats(),
     };
-    analytics.track('round_end', {
-      mode: mode.kind,
-      level: this.level.id,
-      score: this.score,
-      pct: Math.round(pct * 1000) / 10,
-      duration: Math.round(this.roundTime * 10) / 10,
-      stars,
-      coins: total,
-      maxCombo: this.maxCombo,
-      lifted: this.junk.attachedCount,
-      continued: this.extraTimeUsed || this.continueUsed,
-      deadTime: this.lastDeadTime,
-      ...this.readabilityStats(),
-      clearedEarly: this.clearedEarly,
-      assist: { ...this.assist.stats, arrowSec: Math.round(this.assist.stats.arrowSec * 10) / 10 },
-    });
     return {
       mode,
       title: mode.kind === 'rush' ? 'RUN OVER!' : this.clearedEarly ? 'CLEARED!' : this.earlyEnd === 'stuck' ? 'OUT OF REACH!' : "TIME'S UP!",
@@ -1034,7 +1013,6 @@ export class Game implements FeatureHost {
     }
     this.save.upgrades[id] = lvl + 1;
     writeSave(this.save);
-    analytics.track('upgrade_purchase', { id, level: lvl + 1, cost: viaAd ? 0 : cost, via: viaAd ? 'rewarded' : 'coins' });
     audio.powerUp();
     return true;
   }
@@ -1046,7 +1024,6 @@ export class Game implements FeatureHost {
     this.save.ownedSkins.push(id);
     this.save.skin = id;
     writeSave(this.save);
-    analytics.track('skin_purchase', { id, cost: skin.cost });
     this.truck.setSkin(skin);
     audio.powerUp();
     return true;
@@ -1073,7 +1050,6 @@ export class Game implements FeatureHost {
     if (document.hidden) {
       ads.gameplayStop();
       audio.setAdMuted(true);
-      analytics.track('session_length', { seconds: Math.round(analytics.now()), rounds: this.save.stats.rounds, reason: 'hidden' });
       writeSave(this.save);
     } else {
       if (!ads.busy) audio.setAdMuted(false);

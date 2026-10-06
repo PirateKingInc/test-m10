@@ -6,7 +6,6 @@
  * The wrapper guarantees: no duplicate gameplayStart/Stop, gameplay is stopped
  * before any ad, and game audio is muted for the whole ad.
  */
-import { analytics } from './analytics';
 
 interface PokiLike {
   init(): Promise<void>;
@@ -209,7 +208,6 @@ export class Ads {
     this.gameplayStop();
     this.adRunning = true;
     this.onAdStart();
-    analytics.track('commercial_break');
     try {
       await this.sdk.commercialBreak(() => {});
     } catch {
@@ -227,7 +225,6 @@ export class Ads {
     this.gameplayStop();
     this.adRunning = true;
     this.onAdStart();
-    analytics.track('rewarded_accepted', { placement });
     let ok = false;
     try {
       ok = (await this.sdk.rewardedBreak({ size, onStart: () => {} })) === true;
@@ -237,7 +234,6 @@ export class Ads {
       this.adRunning = false;
       this.onAdEnd();
     }
-    analytics.track(ok ? 'rewarded_completed' : 'rewarded_failed', { placement });
     if (wasPlaying) this.gameplayStart();
     return ok;
   }
@@ -250,7 +246,6 @@ const shownThisScreen = new Set<string>();
 export function rewardedOfferShown(placement: string) {
   if (shownThisScreen.has(placement)) return;
   shownThisScreen.add(placement);
-  analytics.track('rewarded_offer_shown', { placement });
 }
 export function resetOfferScreen() {
   shownThisScreen.clear();
