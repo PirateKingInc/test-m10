@@ -84,17 +84,19 @@ the requirement list given in the pre-submission brief.
 
 | Check | Result | Evidence |
 |---|---|---|
-| Full regression | ✅ 22/22 pass | 14 game-flow and 8 Poki SDK checks. They cover the core loop, all 6 rewarded placements, the skin try, Mega Magnet, continue, daily, save and hide/show, the SDK call order, the no-SDK fallback, and no fake ad UI on Poki hosts. |
+| Debug code stripped from the Poki build | ✅ | `npm run package` builds with `--mode poki`. A scan of the zip finds no bot, overlay, fps, stats, config-override or thumbnail code. With `?debug=1&bot=1&cfg.round.length=5&thumb=1` the Poki build shows no overlay, exposes no test globals, does not autoplay and keeps 90 s rounds. |
+| Stripped-build regression | ✅ | An input-only suite (keyboard, tap, buttons; no test hooks) ran on desktop and phone and passed 40 checks on each. It covers the SDK order, all 6 rewarded placements with rewards granted, the garage, skin try, Mega Magnet, Rush with continue, daily, hide/show, the no-SDK fallback and save persistence. |
+| Full regression (test build) | ✅ 22/22 pass | 14 game-flow and 8 Poki SDK checks. They cover the core loop, all 6 rewarded placements, the skin try, Mega Magnet, continue, daily, save and hide/show, the SDK call order, the no-SDK fallback, and no fake ad UI on Poki hosts. |
 | Zero network calls except the Poki SDK | ✅ | Network log of full sessions on desktop and phone: a plain keyboard session, and a scripted session through every screen and a rewarded flow. It ran across 9 viewports plus a forced Poki-SDK load. Result: 42 same-origin requests, 1 external (`game-cdn.poki.com/scripts/v2/poki-sdk.js`), no websockets. The bundle contains no other URL. |
 | In-game analytics removed | ✅ | `src/core/analytics.ts` and every tracking call deleted. |
 | Canvas fills the screen | ✅ | The canvas is the full viewport with no scroll at 16:9 desktop sizes from 640×360 to 1920×1080, in phone portrait and landscape, and on tablets in both orientations. It renders at device pixel ratio, capped at 1.5 on mobile. |
 | Initial download < 8 MB | ✅ | 160 KB gzipped (599 KB raw) for the Poki build. |
 | Mobile controls on tablets; desktop instructions | ✅ fixed | Drag-to-steer works on every device with no detection needed. The first-round hint now reads "Click & drag, or WASD / arrow keys" on mouse devices and "Drag to steer" on touch devices, including iPads. |
-| Standard button ≥ reward button (6 placements) | ✅ | Measured on desktop and phone: Play beats extra time, ×3 coins, Mega Magnet and continue run. The coin-buy button (44 px high) beats the ad button (42 px, same width) for free upgrade and skin try. |
+| Standard button ≥ reward button (6 placements) | ✅ | Measured on the Poki build, desktop and phone. Play (398×66 desktop, 334×68 phone) beats extra time, ×3 coins, Mega Magnet and continue run (at most 398×52 / 324×52). In the garage the coin-buy button is **52 px** tall against **40 px** for the ad button at the same width, for free upgrade and skin try. |
 | No branding, external links or other ads | ✅ | No `<a>` links in the build and no other ad network. |
 | Poki SDK events | ✅ | `init` → `gameLoadingFinished` → `gameplayStart` on first input, `gameplayStop` before every ad and at round end, no duplicates. `rewardedBreak({size, onStart})`. |
 | Real-phone performance | ❌ not done | No physical devices are available to the build sandbox. Needs a person; see the report. |
-| Off public URLs | ❌ temporarily public | A GitHub Pages test build is live again at https://piratekinginc.github.io/test-m10/, on request, for testing. **Before the Poki upload:** delete `.github/workflows/pages.yml` and the `gh-pages` branch, turn Pages off, and make the repo private. |
+| Off public URLs | ⚠️ owner steps left | The Pages deploy workflow is removed and `gh-pages` holds only an empty `.nojekyll`, so the site serves nothing. **Owner to do:** delete the `gh-pages` branch, turn Pages off and make the repo private. |
 
 ### Changelog since the last real-player test
 - **Size = power:** the truck grows with lift capacity, with a power-up pop at each new tier.
