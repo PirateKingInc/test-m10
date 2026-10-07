@@ -14,14 +14,14 @@ ships zero asset files. The design and tech plan is in [`PLAN.md`](PLAN.md).
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm run build      # typecheck + production build -> dist/
+npm run build      # typecheck + TEST build -> dist/ (keeps ?debug=1, ?bot=1, stats, thumbnails)
 npm run preview    # serve dist/ on http://localhost:4173
-npm run package    # build + junk-magnet-poki.zip (the file you upload to Poki)
+npm run package    # STRIPPED Poki build (--mode poki) -> junk-magnet-poki.zip (the file you upload to Poki)
 npm run thumbnails # render promo thumbnails -> thumbnails/*.png (see below)
 ```
 
 ## Submitting to Poki
-`npm run package` produces `junk-magnet-poki.zip` (≈168 KB) with `index.html`
+`npm run package` produces `junk-magnet-poki.zip` (≈161 KB) with `index.html`
 at the zip root. Every path is relative (`base: './'`), so it runs from any
 sub-path or iframe.
 
@@ -60,6 +60,12 @@ sub-path or iframe.
 5. Keep the game off public URLs (Poki deals are web-exclusive): see *Pre-submission checks*.
 
 ### Useful URL params
+These work in the test build (`npm run dev` / `npm run build`). The Poki build
+(`npm run package`) compiles out every debug and test switch below, along with the bot,
+the overlay, the fps counter, per-round stats, config overrides and the thumbnail tool
+(`src/dev/devtools.ts` and every `__STRIP__` guard). Only the ad-mock switches (`?adfail`,
+`?adcooldown`, `?sdk=poki`) remain, because the SDK wrapper is shared.
+
 | Param | Effect |
 |---|---|
 | `?debug=1` | Debug overlay (FPS, draw calls, growth and readability stats; local only, nothing is recorded or sent). Also exposes `window.__game`. |
@@ -82,7 +88,7 @@ the requirement list given in the pre-submission brief.
 | Zero network calls except the Poki SDK | ✅ | Network log of full sessions on desktop and phone: a plain keyboard session, and a scripted session through every screen and a rewarded flow. It ran across 9 viewports plus a forced Poki-SDK load. Result: 42 same-origin requests, 1 external (`game-cdn.poki.com/scripts/v2/poki-sdk.js`), no websockets. The bundle contains no other URL. |
 | In-game analytics removed | ✅ | `src/core/analytics.ts` and every tracking call deleted. |
 | Canvas fills the screen | ✅ | The canvas is the full viewport with no scroll at 16:9 desktop sizes from 640×360 to 1920×1080, in phone portrait and landscape, and on tablets in both orientations. It renders at device pixel ratio, capped at 1.5 on mobile. |
-| Initial download < 8 MB | ✅ | 167 KB gzipped (615 KB raw). |
+| Initial download < 8 MB | ✅ | 160 KB gzipped (599 KB raw) for the Poki build. |
 | Mobile controls on tablets; desktop instructions | ✅ fixed | Drag-to-steer works on every device with no detection needed. The first-round hint now reads "Click & drag, or WASD / arrow keys" on mouse devices and "Drag to steer" on touch devices, including iPads. |
 | Standard button ≥ reward button (6 placements) | ✅ | Measured on desktop and phone: Play beats extra time, ×3 coins, Mega Magnet and continue run. The coin-buy button (44 px high) beats the ad button (42 px, same width) for free upgrade and skin try. |
 | No branding, external links or other ads | ✅ | No `<a>` links in the build and no other ad network. |
@@ -110,13 +116,17 @@ the requirement list given in the pre-submission brief.
   - in-game analytics (Poki dashboard and recordings instead);
 
 ## Final bundle size
+The Poki upload build (`npm run package`, debug tooling compiled out):
+
 | File | Raw | Gzip |
 |---|---|---|
-| `assets/index-*.js` (game + three.js) | 597 KB | 160 KB |
-| `assets/thumbnail-*.js` (lazy, only loaded with `?thumb=1`) | 4.8 KB | 2.3 KB |
-| `assets/index-*.css` | 11.7 KB | 3.4 KB |
+| `assets/index-*.js` (game + three.js) | 586 KB | 156 KB |
+| `assets/index-*.css` | 11.6 KB | 3.3 KB |
 | `index.html` | 1.6 KB | 0.8 KB |
-| **Total `dist/`** | **≈ 615 KB** | **≈ 167 KB** (zip: 168 KB) |
+| **Total** | **≈ 599 KB** | **≈ 160 KB** (zip: 161 KB) |
+
+The test build (`npm run build`) is about 11 KB larger: it adds the bot, the debug
+overlay and the lazily loaded thumbnail renderer.
 
 That is well under the 5 MB target, with no images, models or audio files.
 Under 4× CPU throttling, a 4G-like network profile and software WebGL (headless
@@ -167,7 +177,8 @@ src/game/features.ts   per-level feature registry (Rush waves; Phase 2 hooks)
 src/game/truck.ts      truck model/skins, driving over the heightfield, ramps
 src/game/effects.ts    particles + camera rig (zoom, shake)
 src/ui/ui.ts           HUD, end screen hub, Garage, Modes
-src/ui/debug.ts        ?debug=1 overlay
+src/ui/debug.ts        ?debug=1 overlay (test build only)
+src/dev/devtools.ts    test-build tooling: bot driver, fps, per-round stats, debug pose (compiled out of the Poki build)
 src/game/assist.ts     adaptive anti-dead-time assists: sky drop, magnet pulse, off-screen arrow
 src/game/bot.ts        ?bot=1 autopilot with novice / average / skilled profiles (measurement only)
                        size = power + liftable outline / too-heavy tint: Game.visualScaleFor, junk.ts (makeStateMaterial, makeOutlineMaterial)
@@ -751,7 +762,7 @@ if the next balance pass needs it:
 | 7. Light meta, ~1 upgrade per round | ✅ | Tiers cost 90–420 coins. An average player earns ~165–200 coins per round (less in Suburb), skilled players more through combo multipliers, and assisted pickups pay ¼. Magnet Power (+30% pull, +35% lift per tier) is what opens 3★, so every purchase is felt. Measured: average reaches Junkyard 3★ with ~3–4 tiers and Suburb with ~4 (*Difficulty retune*). The "Free" rewarded offer per tier speeds this up for players who watch ads. |
 | Portrait-first, responsive | ✅ | Camera framing adapts to aspect ratio (it keeps visible width in portrait) and updates live on resize/orientation change. Touch targets are ≥48px, and the 90px banner-safe zones are enforced in portrait. |
 | 60fps on mid-range phones | ⚠️ Not measured on a device | About 28 draw calls and ~115k triangles at round start regardless of junk count (instancing per type, static decor merged into 1 mesh; the liftable outline adds one instanced draw per liftable junk type, so up to ~37 calls once everything is liftable), pooled particles and junk, max 36 flying bodies, junk outside the magnet's grid cells never touched (sleeping), DPR capped at 1.5 on mobile, no real-time shadows. The sandbox had no GPU, so FPS numbers there are meaningless. **Check on a real phone with `?debug=1`.** |
-| Build < 5MB, playable < 3s | ✅ | ~615KB total (168 KB zip). ~1.5s to playable under throttled conditions. |
+| Build < 5MB, playable < 3s | ✅ | ~599KB total (161 KB zip). ~1.5s to playable under throttled conditions. |
 
 ## Next 5 changes most likely to raise average playtime and rewarded opt-in (ranked)
 *(Shipped since the last list: late-round dead time, star/economy calibration against bots, and the playtest-1 readability fix. See above.)*
