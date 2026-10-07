@@ -154,7 +154,7 @@ export class Ads {
       // ad blocker: Poki still lets the game run
       console.warn('[ads] init rejected (adblock?) — continuing');
     }
-    if (params.get('debug') === '1') this.sdk.setDebug?.(true);
+    if (!__STRIP__ && params.get('debug') === '1') this.sdk.setDebug?.(true);
   }
 
   private loaded = false;

@@ -22,14 +22,6 @@ const _s = new THREE.Vector3();
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 const SHADOWS = 48;
 
-export interface AssistStats {
-  drops: number;
-  dropItems: number;
-  pulses: number;
-  pulseItems: number;
-  arrowSec: number;
-}
-
 export class Assist {
   readonly group = new THREE.Group();
   private shadows: THREE.InstancedMesh;
@@ -41,7 +33,6 @@ export class Assist {
   arrowTarget: { x: number; z: number } | null = null;
   /** arrow screen placement for the UI (null = hidden) */
   arrowScreen: { x: number; y: number; angle: number } | null = null;
-  stats: AssistStats = { drops: 0, dropItems: 0, pulses: 0, pulseItems: 0, arrowSec: 0 };
   private dropCd = 0;
   private pulseCd = 0;
   private scanT = 0;
@@ -66,9 +57,6 @@ export class Assist {
   }
 
   reset() {
-    this.stats = { drops: 0, dropItems: 0, pulses: 0, pulseItems: 0, arrowSec: 0 };
-    this.droughts = [];
-    this.lastAction = '';
     this.dropCd = this.pulseCd = this.scanT = this.noVisibleT = 0;
     this.arrowTarget = null;
     this.arrowScreen = null;
@@ -146,8 +134,8 @@ export class Assist {
     }
 
     // debug: record why a drought got long (read by the measurement harness)
-    if (idle > 3.5 && !this.droughtLogged) {
-      this.droughtLogged = true;
+    if (!__STRIP__ && idle > 3.5 && !g.dev!.droughtLogged) {
+      g.dev!.droughtLogged = true;
       let near = 0;
       const sense = A.skyDrop.senseRadius + radius * 2;
       g.junk.forEachNear(g.truck.x, g.truck.z, sense, (it) => {
@@ -155,9 +143,9 @@ export class Assist {
       });
       let dropping = 0;
       g.junk.forEachDropping(() => dropping++);
-      this.droughts.push({ t: Math.round(g.roundTime), near, dropCd: +this.dropCd.toFixed(1), pulseCd: +this.pulseCd.toFixed(1), dDelay: +this.dropDelay.toFixed(1), pDelay: +this.pulseDelay.toFixed(1), flying: g.junk.flying, dropping, last: this.lastAction, cap: Math.round(cap), y: +g.truck.y.toFixed(1) });
+      g.dev!.droughts.push({ t: Math.round(g.roundTime), near, dropCd: +this.dropCd.toFixed(1), pulseCd: +this.pulseCd.toFixed(1), dDelay: +this.dropDelay.toFixed(1), pDelay: +this.pulseDelay.toFixed(1), flying: g.junk.flying, dropping, last: g.dev!.lastAction, cap: Math.round(cap), y: +g.truck.y.toFixed(1) });
     }
-    if (idle < 0.1) this.droughtLogged = false;
+    if (!__STRIP__ && idle < 0.1) g.dev!.droughtLogged = false;
 
     // b) pulse
     if (A.pulse.enabled && this.pulseCd <= 0 && idle >= this.pulseDelay) this.pulse(radius, cap);
@@ -169,13 +157,9 @@ export class Assist {
     else this.noVisibleT = 0;
     if (A.arrow.enabled && this.noVisibleT >= A.arrow.idleDelay) {
       if (this.scanT >= 0.149 || !this.arrowTarget) this.arrowTarget = this.bestCluster(cap);
-      this.stats.arrowSec += dt;
     } else this.arrowTarget = null;
   }
 
-  droughts: Record<string, unknown>[] = [];
-  private droughtLogged = false;
-  private lastAction = '';
   /** current assist delays (exposed for the debug overlay) */
   dropDelay = 0;
   pulseDelay = 0;
@@ -253,10 +237,8 @@ export class Assist {
         }
       }
     }
-    this.lastAction = `drop ${dropped}/${chosen.length} far=${far.length} tease=${teasers.length} @${Math.round(g.roundTime)}`;
+    if (!__STRIP__) g.dev!.lastAction = `drop ${dropped}/${chosen.length} far=${far.length} tease=${teasers.length} @${Math.round(g.roundTime)}`;
     if (dropped) {
-      this.stats.drops++;
-      this.stats.dropItems += dropped;
       this.dropCd = A.cooldown;
       audio.whoosh();
     } else this.dropCd = 0.5;
@@ -273,7 +255,7 @@ export class Assist {
       if (d <= range) list.push({ it, d });
     });
     this.pulseCd = list.length ? P.cooldown : 0.6;
-    this.lastAction = `pulse ${list.length} @${Math.round(g.roundTime)}`;
+    if (!__STRIP__) g.dev!.lastAction = `pulse ${list.length} @${Math.round(g.roundTime)}`;
     if (!list.length) return;
     list.sort((a, b) => a.d - b.d);
     const n = Math.min(P.maxItems, list.length);
@@ -282,8 +264,6 @@ export class Assist {
       list[i].it.fast = true;
       g.junk.lift(list[i].it, g.truck.airborne);
     }
-    this.stats.pulses++;
-    this.stats.pulseItems += n;
     this.ringT = 0;
     this.ringR = range;
     audio.pulse();

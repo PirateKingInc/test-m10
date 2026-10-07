@@ -734,9 +734,14 @@ canvas#game {
   min-width: 96px;
 }
 .btn.buy {
-  min-height: 44px;
-  font-size: 16px;
+  min-height: 52px;
+  font-size: 17px;
   background: var(--yellow);
+}
+/* garage: the coin-buy (standard) button stays clearly larger than its ad alternative (Poki rule) */
+.up-btns .btn.ad.small {
+  min-height: 40px;
+  font-size: 13px;
 }
 .maxed {
   font-weight: 900;
@@ -848,20 +853,4 @@ canvas#game {
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
-}
-
-/* ---------- debug ---------- */
-#debug {
-  position: fixed;
-  left: 4px;
-  bottom: 4px;
-  z-index: 50;
-  background: rgba(0, 0, 0, 0.72);
-  color: #9fffb0;
-  font: 11px/1.35 ui-monospace, Menlo, monospace;
-  padding: 6px 8px;
-  border-radius: 6px;
-  max-width: 330px;
-  pointer-events: none;
-  white-space: pre;
 }

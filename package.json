@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "package": "npm run build && rm -f junk-magnet-poki.zip && cd dist && zip -qr ../junk-magnet-poki.zip . && cd .. && ls -l junk-magnet-poki.zip",
+    "package": "tsc --noEmit && vite build --mode poki && rm -f junk-magnet-poki.zip && cd dist && zip -qr ../junk-magnet-poki.zip . && cd .. && ls -l junk-magnet-poki.zip",
     "thumbnails": "node scripts/thumbnails.mjs"
   },
   "dependencies": {

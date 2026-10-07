@@ -5,12 +5,12 @@ import { loadSave } from './core/save';
 import { ads } from './core/sdk';
 import { Game } from './game/game';
 import { UI } from './ui/ui';
-import { mountDebug } from './ui/debug';
 
 async function boot() {
   const params = new URLSearchParams(location.search);
-  const debug = params.get('debug') === '1';
-  const overrides = debug || params.has('tune') ? applyConfigOverrides(location.search) : [];
+  const debug = !__STRIP__ && params.get('debug') === '1';
+  // test build only: ?cfg.* overrides, thumbnails, debug overlay (all compiled out of the Poki build)
+  const overrides = !__STRIP__ && (debug || params.has('tune')) ? applyConfigOverrides(location.search) : [];
 
   // SDK first (mock is instant; real Poki SDK loads in parallel with our parse)
   const sdkReady = ads.init();
@@ -20,7 +20,7 @@ async function boot() {
   const save = loadSave();
   save.stats.sessions++;
   const canvas = document.getElementById('game') as HTMLCanvasElement;
-  const thumb = params.has('thumb');
+  const thumb = !__STRIP__ && params.has('thumb');
   const game = new Game(canvas, save, { offline: thumb });
   game.ui = new UI(game);
   if (thumb) {
@@ -34,7 +34,8 @@ async function boot() {
     return;
   }
   game.boot();
-  if (debug) {
+  if (!__STRIP__ && debug) {
+    const { mountDebug } = await import('./ui/debug');
     mountDebug(game, overrides);
     (window as any).__game = game;
     (window as any).__cfg = CONFIG;

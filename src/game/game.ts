@@ -16,7 +16,7 @@ import { JUNK_TYPES } from './junkTypes';
 import { DailyGoal, generateLayout, Layout, LEVELS, levelById, LevelDef, ModeKind, dailySetup } from './levels';
 import { Truck } from './truck';
 import { Assist } from './assist';
-import { Bot, BotSkill } from './bot';
+import { DevTools } from '../dev/devtools';
 import { World } from './world';
 import type { UI } from '../ui/ui';
 
@@ -56,41 +56,6 @@ export interface Results {
   lifted: number;
 }
 
-export interface DeadTimeStats {
-  window: number; // seconds measured (final 30s of play)
-  pickups: number; // pickups in the window
-  maxGap: number; // longest stretch without a pickup
-  meanGap: number;
-  gapsOver3: number; // droughts longer than 3s
-  secOver3: number; // total seconds spent beyond 3s in droughts
-}
-
-/** Gaps between pickups in the last `window` seconds of play. */
-export function deadTime(times: number[], end: number, window = 30): DeadTimeStats {
-  const start = Math.max(0, end - window);
-  const pts = [start, ...times.filter((t) => t >= start && t <= end), end];
-  const gaps: number[] = [];
-  for (let i = 1; i < pts.length; i++) gaps.push(pts[i] - pts[i - 1]);
-  const over = gaps.filter((g) => g > 3);
-  const r = (x: number) => Math.round(x * 100) / 100;
-  return {
-    window: r(end - start),
-    pickups: pts.length - 2,
-    maxGap: r(Math.max(...gaps)),
-    meanGap: r((end - start) / Math.max(1, pts.length - 1)),
-    gapsOver3: over.length,
-    secOver3: r(over.reduce((a, g) => a + g - 3, 0)),
-  };
-}
-
-/** number of pickup droughts longer than `limit` seconds over the whole round */
-export function deadTimeOver(times: number[], end: number, limit: number) {
-  const pts = [0, ...times.filter((t) => t <= end), end];
-  let n = 0;
-  for (let i = 1; i < pts.length; i++) if (pts[i] - pts[i - 1] > limit) n++;
-  return n;
-}
-
 type State = 'boot' | 'attract' | 'playing' | 'timeup' | 'end' | 'loading';
 
 const TIER_NAMES = ['CANS', 'BIKES & DRUMS', 'FRIDGES', 'CARS', 'CONTAINERS'];
@@ -104,8 +69,6 @@ export class Game implements FeatureHost {
   particles = new Particles();
   assist: Assist;
   /** roundTime of every pickup this round (dead-time metrics) */
-  pickupTimes: number[] = [];
-  lastDeadTime: DeadTimeStats | null = null;
   rig = new CameraRig();
   input: Input;
   ui!: UI;
@@ -157,26 +120,16 @@ export class Game implements FeatureHost {
   lastResults: Results | null = null;
   private wasAirborne = false;
 
-  /** ?bot=1&skill=novice|average|skilled — autopilot for tuning / automated tests */
-  bot = new URLSearchParams(location.search).get('bot') === '1';
-  private brain = new Bot((new URLSearchParams(location.search).get('skill') as BotSkill) || 'average');
-  /** per-round numbers for the bot measurement harness and the ?debug=1 overlay (stays local, never sent) */
-  lastRoundStats: Record<string, unknown> | null = null;
+  /** test-build tooling (bot, ?debug=1 stats); always null in the Poki build */
+  dev: DevTools | null = null;
   pickups = 0;
   assistedPickups = 0;
   earlyEnd: '' | 'cleared' | 'stuck' = '';
   secondsLost = 0;
-  /** ?debug=1&speed=N — simulate N× faster than real time (bot measurements) */
-  simSpeed = (() => {
-    const p = new URLSearchParams(location.search);
-    return p.get('debug') === '1' ? Math.max(1, Math.min(16, Number(p.get('speed')) || 1)) : 1;
-  })();
-  fps = 60;
-  private frames = 0;
-  private fpsT = 0;
   private last = performance.now();
 
   constructor(canvas: HTMLCanvasElement, public save: SaveData, opts: { offline?: boolean } = {}) {
+    if (!__STRIP__) this.dev = new DevTools(this);
     this.world = new World(canvas, opts);
     this.truck = new Truck({ ring: 0xff3c38 });
     this.world.scene.add(this.junk.group, this.truck.root, this.truck.magnet, this.truck.ring, this.truck.shadow, this.particles.mesh);
@@ -279,7 +232,7 @@ export class Game implements FeatureHost {
     }
     return Math.max(S.minScale, Math.min(S.maxScale, len / this.truck.length));
   }
-  private viewRadius() {
+  viewRadius() {
     const c = CONFIG.camera;
     const m = CONFIG.magnet;
     const r = Math.min(m.maxRadius, this.baseRadius() + m.radiusPerSqrtMass * Math.sqrt(this.junk.collectedMass));
@@ -395,12 +348,11 @@ export class Game implements FeatureHost {
     this.playerPickupTimes = [];
     this.coinValue = 0;
     this.comboMult = 1;
-    this.pickupTimes = [];
     this.pickups = 0;
     this.assistedPickups = 0;
     this.earlyEnd = '';
     this.secondsLost = 0;
-    this.brain = new Bot(this.brain.skill);
+    if (!__STRIP__) this.dev!.resetRound();
     this.clearedEarly = false;
     this.clearCoins = 0;
     this.assist.reset();
@@ -410,13 +362,7 @@ export class Game implements FeatureHost {
     this.junk.setTierStates(this.liftTier);
     this.truck.targetScale = this.truck.scale = this.visualScaleFor(this.capacity);
     this.tierLifted = [0, 0, 0, 0, 0];
-    this.bonks = 0;
     this.bonkT = 0;
-    this.firstPickupT = -1;
-    this.tierUnlockT = {};
-    this.steerLiftT = 0;
-    this.steerHeavyT = 0;
-    this.steerSampleT = 0;
     this.extraTimeUsed = false;
     this.continueUsed = false;
     this.tripleUsed = false;
@@ -437,13 +383,7 @@ export class Game implements FeatureHost {
     let dt = (now - this.last) / 1000;
     this.last = now;
     if (dt > 0.1) dt = 0.1; // tab switch / hitch guard
-    this.frames++;
-    this.fpsT += dt;
-    if (this.fpsT >= 0.5) {
-      this.fps = this.frames / this.fpsT;
-      this.frames = 0;
-      this.fpsT = 0;
-    }
+    if (!__STRIP__) this.dev!.frame(dt);
     if (ads.busy || document.hidden) {
       this.world.renderer.render(this.world.scene, this.rig.camera);
       return;
@@ -451,7 +391,7 @@ export class Game implements FeatureHost {
     this.input.update();
     // fixed-size sub-steps keep physics stable and real-time on slow devices
     // equal sub-steps (never a tiny remainder step: those caused ramp-launch spikes)
-    const total = dt * this.simSpeed;
+    const total = __STRIP__ ? dt : dt * this.dev!.simSpeed;
     const n = Math.max(1, Math.ceil(total / (1 / 30) - 1e-6));
     let left = total;
     do {
@@ -485,11 +425,11 @@ export class Game implements FeatureHost {
           hasInput = true;
         }
         target = this.speed() * CONFIG.truck.autoDriveSpeed;
-        if (this.bot && this.roundTime === 0 && this.hintTimer > 1) this.onFirstInput();
+        if (!__STRIP__ && this.dev!.bot && this.roundTime === 0 && this.hintTimer > 1) this.onFirstInput();
         this.hintTimer += dt;
         if (this.firstPickup && this.hintTimer > 2.5) this.ui.showHint(true);
       } else if (s === 'playing') {
-        const auto = this.bot && !this.input.active ? this.brain.steer(this, dt) : null;
+        const auto = __STRIP__ ? null : this.dev!.steer(dt);
         if (auto) {
           [wantX, wantZ] = auto;
           hasInput = true;
@@ -507,7 +447,7 @@ export class Game implements FeatureHost {
       this.truck.collisionScale = Math.min(this.truck.scale, this.balanceScale() * CONFIG.sizing.collisionCap);
       if (s === 'playing' && dt > 0) {
         this.checkBonks(dt, cap);
-        this.sampleSteering(dt, hasInput, wantX, wantZ, cap);
+        if (!__STRIP__) this.dev!.sampleSteering(dt, hasInput, wantX, wantZ, cap);
       }
       const impact = this.truck.drive(dt, wantX, wantZ, hasInput, target, this.world.heightAt, this.world.half, (x, z, r) => this.pushOut(x, z, r, cap));
       if (this.truck.airborne && !this.wasAirborne && this.truck.vy > 3) audio.jump();
@@ -592,23 +532,17 @@ export class Game implements FeatureHost {
   }
 
   /* ---------------- readability: tiers, bonks, steering ---------------- */
-  bonks = 0;
   private bonkT = 0;
-  firstPickupT = -1;
-  tierUnlockT: Record<number, number> = {};
-  private steerLiftT = 0;
-  private steerHeavyT = 0;
-  private steerSampleT = 0;
 
   /** Tier crossings from ANY source (pickups, pulses, Mega Magnet on/off). Unlocks get the power-up moment. */
-  private checkTier(cap: number) {
+  checkTier(cap: number) {
     const top = this.topTier(cap);
     if (top === this.liftTier) return;
     const up = top > this.liftTier;
     this.liftTier = top;
     this.junk.setTierStates(top, up ? top : -1);
     if (!up) return;
-    if (this.state === 'playing' && this.tierUnlockT[top] === undefined) this.tierUnlockT[top] = Math.round(this.roundTime * 10) / 10;
+    if (!__STRIP__) this.dev!.onTierUnlock(top);
     this.toast(`NOW LIFTING ${TIER_NAMES[top]}!`);
     audio.powerUp();
     this.truck.pop();
@@ -630,7 +564,7 @@ export class Game implements FeatureHost {
       if (now - (it.bonkAt ?? -99) < H.bonkCooldown) return;
       it.bonkAt = now;
       this.junk.bonk(it);
-      this.bonks++;
+      if (!__STRIP__) this.dev!.bonks++;
       if (this.bonkT > 0) return;
       this.bonkT = H.bonkGap;
       audio.clank(it.tier);
@@ -639,59 +573,6 @@ export class Game implements FeatureHost {
       _v.set(it.x, it.y + it.radius * 1.2, it.z).project(this.rig.camera);
       this.ui?.tooHeavy((_v.x * 0.5 + 0.5) * window.innerWidth, (-_v.y * 0.5 + 0.5) * window.innerHeight, Math.min(1, cap / it.mass), it.tier);
     });
-  }
-
-  /** Is the player steering toward something liftable? (nearest resting junk in a 25° cone, 30 units) */
-  private sampleSteering(dt: number, hasInput: boolean, wx: number, wz: number, cap: number) {
-    this.steerSampleT -= dt;
-    if (this.steerSampleT > 0) return;
-    const step = 0.1;
-    this.steerSampleT = step;
-    const l = Math.hypot(wx, wz);
-    if (!hasInput || l < 1e-3) return;
-    const dx = wx / l;
-    const dz = wz / l;
-    let best: Item | null = null;
-    let bd = 30;
-    const cos = Math.cos((25 * Math.PI) / 180);
-    this.junk.forEachNear(this.truck.x, this.truck.z, 30, (it) => {
-      const ox = it.x - this.truck.x;
-      const oz = it.z - this.truck.z;
-      const d = Math.hypot(ox, oz);
-      if (d < 0.5 || d >= bd || (ox * dx + oz * dz) / d < cos) return;
-      bd = d;
-      best = it;
-    });
-    if (!best) return;
-    if ((best as Item).mass <= cap) this.steerLiftT += step;
-    else this.steerHeavyT += step;
-  }
-
-  /** debug/screenshot helper: pretend `mass` was collected and park the truck at (x, z). */
-  debugPose(x: number, z: number, heading: number, mass: number) {
-    this.junk.collectedMass = mass;
-    this.truck.x = x;
-    this.truck.z = z;
-    this.truck.heading = heading;
-    this.truck.speed = 0;
-    this.truck.y = this.world.heightAt(x, z);
-    this.checkTier(this.capacity);
-    this.truck.targetScale = this.truck.scale = this.visualScaleFor(this.capacity);
-    this.truck.updateVisual(0, this.junk.pileRadius, this.radius(), 0.3, false, 0, this.world.heightAt);
-    this.rig.snap(x, this.truck.y, z, this.viewRadius());
-  }
-
-  /** readability metrics for the overlay / round_end */
-  readabilityStats() {
-    const mins = Math.max(this.roundTime, 1) / 60;
-    const steer = this.steerLiftT + this.steerHeavyT;
-    return {
-      bonks: this.bonks,
-      bonkRate: Math.round((this.bonks / mins) * 10) / 10,
-      firstPickupT: this.firstPickupT < 0 ? null : Math.round(this.firstPickupT * 10) / 10,
-      tierUnlockT: { ...this.tierUnlockT },
-      steerLiftPct: steer ? Math.round((this.steerLiftT / steer) * 1000) / 10 : null,
-    };
   }
 
   /** Push the truck out of junk that is too heavy to lift. */
@@ -734,7 +615,7 @@ export class Game implements FeatureHost {
     }
     this.lastPickupT = this.roundTime;
     if (this.state === 'playing') {
-      this.pickupTimes.push(this.roundTime);
+      if (!__STRIP__) this.dev!.onPickup();
       this.pickups++;
       if (assisted) this.assistedPickups++;
     }
@@ -773,7 +654,6 @@ export class Game implements FeatureHost {
       this.timeLeft = Math.min(CONFIG.rush.maxTime, this.timeLeft + add);
       this.ui.timeBonus();
     }
-    if (this.firstPickupT < 0 && this.state === 'playing') this.firstPickupT = this.roundTime;
     for (const f of this.features) f.onAttach?.(this, it);
   }
 
@@ -807,7 +687,7 @@ export class Game implements FeatureHost {
   }
 
   private timeUp() {
-    this.lastDeadTime = deadTime(this.pickupTimes, this.roundTime);
+    if (!__STRIP__) this.dev!.onTimeUp();
     this.state = 'timeup';
     this.timerRunning = false;
     ads.gameplayStop();
@@ -891,25 +771,7 @@ export class Game implements FeatureHost {
 
     const goals = this.nextGoals(mode, stars, pct);
     const nextMode: ModeSpec = unlocked ? { kind: 'level', levelId: unlocked } : mode;
-    const whole = deadTime(this.pickupTimes, this.roundTime, this.roundTime);
-    this.lastRoundStats = {
-      mode: mode.kind,
-      level: this.level.id,
-      score: this.score,
-      pct: Math.round(pct * 1000) / 10,
-      stars,
-      coins: total,
-      maxGap: whole.maxGap,
-      maxGap30: this.lastDeadTime?.maxGap ?? 0,
-      gapsOver35: deadTimeOver(this.pickupTimes, this.roundTime, 3.5),
-      assistedShare: this.pickups ? Math.round((this.assistedPickups / this.pickups) * 1000) / 10 : 0,
-      bestCombo: this.maxCombo,
-      roundTime: Math.round(this.roundTime * 10) / 10,
-      earlyEnd: this.earlyEnd,
-      secondsLost: Math.round(this.secondsLost * 10) / 10,
-      droughts: this.assist.droughts.slice(0, 5),
-      ...this.readabilityStats(),
-    };
+    if (!__STRIP__) this.dev!.roundEnd({ mode: mode.kind, pct, stars, coins: total });
     return {
       mode,
       title: mode.kind === 'rush' ? 'RUN OVER!' : this.clearedEarly ? 'CLEARED!' : this.earlyEnd === 'stuck' ? 'OUT OF REACH!' : "TIME'S UP!",
@@ -1063,36 +925,5 @@ export class Game implements FeatureHost {
     this.world.resize(w, h);
     this.rig.resize(w, h);
     document.documentElement.classList.toggle('portrait', h > w);
-  }
-
-  debugStats() {
-    return {
-      state: this.state,
-      fps: this.fps.toFixed(0),
-      mode: this.modeKey(),
-      time: this.timeLeft.toFixed(1),
-      score: this.score,
-      pct: (this.pct() * 100).toFixed(1) + '%',
-      capacity: this.capacity.toFixed(1),
-      radius: this.radius().toFixed(2),
-      pile: this.junk.pileRadius.toFixed(2),
-      items: this.junk.items.length,
-      attached: this.junk.attachedCount,
-      active: this.junk.activeCount,
-      flying: this.junk.flying,
-      combo: this.combo,
-      mega: this.megaLeft > 0 ? this.megaLeft.toFixed(1) : '-',
-      mult: 'x' + this.comboMult,
-      assistDly: `drop ${this.assist.dropDelay.toFixed(1)} pulse ${this.assist.pulseDelay.toFixed(1)}`,
-      assisted: `${this.assistedPickups}/${this.pickups}`,
-      size: `x${this.truck.scale.toFixed(2)} (${(this.truck.length * this.truck.scale).toFixed(1)}u) tier ${this.liftTier}`,
-      bonks: `${this.readabilityStats().bonks} (${this.readabilityStats().bonkRate}/min)`,
-      '1stPick': this.firstPickupT < 0 ? '-' : this.firstPickupT.toFixed(1) + 's',
-      unlocks: Object.entries(this.tierUnlockT).map(([t, v]) => `T${t}@${v}s`).join(' ') || '-',
-      steerLift: (this.readabilityStats().steerLiftPct ?? '-') + '%',
-      coins: this.save.coins,
-      calls: this.world.renderer.info.render.calls,
-      tris: this.world.renderer.info.render.triangles,
-    };
   }
 }
