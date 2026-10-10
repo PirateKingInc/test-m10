@@ -96,7 +96,7 @@ the requirement list given in the pre-submission brief.
 | No branding, external links or other ads | ✅ | No `<a>` links in the build and no other ad network. |
 | Poki SDK events | ✅ | `init` → `gameLoadingFinished` → `gameplayStart` on first input, `gameplayStop` before every ad and at round end, no duplicates. `rewardedBreak({size, onStart})`. |
 | Real-phone performance | ❌ not done | No physical devices are available to the build sandbox. Needs a person; see the report. |
-| Off public URLs | ⚠️ owner steps left | The Pages deploy workflow is removed and `gh-pages` holds only an empty `.nojekyll`, so the site serves nothing. **Owner to do:** delete the `gh-pages` branch, turn Pages off and make the repo private. |
+| Off public URLs | ❌ public on request | The test build is live again at https://piratekinginc.github.io/test-m10/ for a user test and portfolio. **Before the Poki upload:** delete `.github/workflows/pages.yml`, empty or delete `gh-pages`, turn Pages off and make the repo private. |
 
 ### Changelog since the last real-player test
 - **Size = power:** the truck grows with lift capacity, with a power-up pop at each new tier.
